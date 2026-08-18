@@ -7,7 +7,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://agentic-marketing-ui.vercel.app"],
+    allow_origins=["http://localhost:5173", "https://agentic-marketing-ui.vercel.app", "https://brkeven.com", "https://www.brkeven.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
