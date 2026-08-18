@@ -1,137 +1,169 @@
-# Agentic Marketing System
+# Agentic Marketing Optimization System
 
-AI-powered marketing campaign analysis backend. Built with FastAPI, GPT-4o, and Instructor for structured outputs.
+**Brkeven** — AI-powered campaign analysis for solo founders and small marketing agencies.
 
-## What it does
+Live at: [brkeven.com](https://brkeven.com) · [API Docs](https://agentic-marketing-system-production.up.railway.app/docs)
 
-Analyzes marketing campaign performance and returns structured, confidence-scored recommendations. Input ad spend, revenue, product price, and traffic source — get back a performance score, key findings, prioritized action items, and reasoning.
+---
+
+## What It Does
+
+Brkeven analyzes your ad campaign performance using AI and returns instant, actionable insights — no spreadsheets, no guesswork.
+
+You provide your ad spend and revenue. The system diagnoses what's working, identifies the root cause of underperformance, suggests specific optimizations, and scores its own confidence based on the data available.
+
+---
+
+## Live Demo
+
+**Frontend:** https://brkeven.com  
+**Backend API:** https://agentic-marketing-system-production.up.railway.app/docs
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | React + Vite, deployed on Vercel |
+| Backend | FastAPI (Python), deployed on Railway |
+| Database | PostgreSQL via Supabase |
+| AI | OpenAI GPT-4o via Instructor (structured outputs) |
+| Observability | LangSmith tracing |
+
+---
 
 ## Architecture
 
 ```
-React + Vite Frontend (Vercel)
-        ↓
-FastAPI Backend (Railway)  ← this repo
-        ↓              ↓
-   OpenAI GPT-4o    PostgreSQL
-   (Instructor)     (Supabase)
-        ↓
-   LangSmith (tracing)
+User (browser)
+    ↓
+React Frontend — Vercel (brkeven.com)
+    ↓ POST /analyze_campaign
+FastAPI Backend — Railway
+    ↓                        ↓
+OpenAI GPT-4o          Supabase PostgreSQL
+(campaign analysis)    (campaign + result storage)
+    ↓
+LangSmith
+(trace logging)
 ```
 
-## Tech Stack
+---
 
-- **Framework:** FastAPI (Python)
-- **AI:** OpenAI GPT-4o via Instructor library (structured outputs)
-- **Database:** PostgreSQL via Supabase (Session Pooler)
-- **Deployment:** Railway
-- **Observability:** LangSmith
-- **Validation:** Pydantic schemas
+## API
 
-## Project Structure
+### POST `/analyze_campaign`
 
-```
-├── routers/        # HTTP route handlers
-├── services/       # Business logic and AI orchestration
-├── schemas/        # Pydantic models for request/response validation
-├── db/             # Database connection and queries
-├── main.py         # FastAPI app entry point
-├── models.py       # SQLModel database models
-├── database.py     # Database initialization
-└── requirements.txt
-```
-
-## Key Design Decisions
-
-**Structured outputs via Instructor:** Every AI response is validated against a Pydantic schema before reaching the frontend. No free-form text parsing — typed, reliable output every time.
-
-**Tiered required fields:** Only `spend` and `revenue` are required. All other metrics are auto-calculated or flagged as missing with confidence scoring. This avoids penalizing data-sparse users.
-
-**Session Pooler for Railway:** Railway operates on IPv4; Supabase direct connections require IPv6. The Session Pooler connection string resolves this — use `postgresql://postgres.[ref]:[password]@aws-0-us-west-2.pooler.supabase.com:5432/postgres` format.
-
-## Local Setup
-
-```bash
-# Clone the repo
-git clone https://github.com/joannpraise-oss/agentic-marketing-system
-cd agentic-marketing-system
-
-# Create and activate virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your actual values (see Environment Variables below)
-
-# Run the development server
-uvicorn main:app --reload
-```
-
-## Environment Variables
-
-Create a `.env` file in the root directory (never commit this file):
-
-```
-OPENAI_API_KEY=your_openai_api_key
-DATABASE_URL=your_supabase_session_pooler_connection_string
-LANGCHAIN_API_KEY=your_langsmith_api_key
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_PROJECT=your_project_name
-```
-
-## API Endpoints
-
-### POST `/analyze`
-Analyzes a marketing campaign and returns structured recommendations.
+Analyzes a campaign and returns an AI-generated diagnosis.
 
 **Request body:**
 ```json
 {
-  "spend": 150.00,
-  "revenue": 380.00,
+  "spend": 500.00,
+  "revenue": 2000.00,
   "product_price": 32.00,
   "traffic_source": "Meta Ads"
 }
 ```
 
+`spend` and `revenue` are required. All other fields are optional — the system applies confidence scoring when data is missing.
+
 **Response:**
 ```json
 {
-  "performance_score": 7,
-  "overall_assessment": "Campaign is profitable but below optimal ROAS...",
-  "key_findings": ["ROAS of 2.53 exceeds break-even", "..."],
-  "action_items": ["Test higher-intent audiences", "..."],
-  "confidence_level": "high",
-  "reasoning": "..."
+  "campaign_id": 21,
+  "performance_diagnosis": "Strong ROAS of 4.0x indicates healthy campaign performance...",
+  "root_cause": "High revenue relative to spend suggests effective targeting...",
+  "optimization_suggestion": "Consider scaling budget by 20-30% while monitoring ROAS...",
+  "confidence_score": 0.82,
+  "metrics_used": ["spend", "revenue"],
+  "missing_metrics": ["ctr", "cac", "impressions"],
+  "tokens_used": 312,
+  "estimated_cost_usd": 0.0031
 }
 ```
 
-### GET `/health`
-Health check endpoint.
+---
 
-## Deployment
+## Key Design Decisions
 
-The backend is deployed on Railway. The `Procfile` configures the start command:
+**Tiered data intelligence:** Only `spend` and `revenue` are required. The AI adjusts its confidence score based on which optional metrics are provided — more data yields higher confidence, but the system never refuses to analyze due to missing fields.
 
+**Structured AI outputs:** GPT-4o responses are validated against a Pydantic schema via Instructor, ensuring the API always returns consistent, well-typed data rather than freeform text.
+
+**Session Pooler for Railway + Supabase:** Railway's network cannot reach Supabase's direct IPv6 connection. The Supabase Session Pooler (IPv4-compatible) is required for Railway compatibility.
+
+---
+
+## Running Locally
+
+### Prerequisites
+- Python 3.11+
+- Node.js 18+
+- A Supabase project (PostgreSQL)
+- OpenAI API key
+- LangSmith API key (optional, for tracing)
+
+### Backend
+
+```bash
+git clone https://github.com/joannpraise-oss/agentic-marketing-system
+cd agentic-marketing-system
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
-web: uvicorn main:app --host 0.0.0.0 --port $PORT
+
+Create a `.env` file:
+```
+DATABASE_URL=your_supabase_session_pooler_uri
+OPENAI_API_KEY=your_openai_key
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=your_langsmith_key
+LANGCHAIN_PROJECT=agentic-marketing
 ```
 
-Set all environment variables in Railway's Variables tab. Never hardcode credentials.
+```bash
+uvicorn main:app --reload
+```
 
-## Frontend
+Backend runs at `http://localhost:8000`. Swagger UI at `http://localhost:8000/docs`.
 
-The React + Vite frontend is in a separate repository:
-- **Repo:** https://github.com/joannpraise-oss/agentic-marketing-ui
-- **Live:** https://agentic-marketing-ui.vercel.app
+### Frontend
 
-## Security Notes
+```bash
+git clone https://github.com/joannpraise-oss/agentic-marketing-ui
+cd agentic-marketing-ui
+npm install
+npm run dev
+```
 
-- All API keys and credentials are managed via environment variables
-- `.gitignore` excludes `.env` files from version control
-- No credentials are committed to this repository
-- Database password rotation is implemented as a security practice
+Frontend runs at `http://localhost:5173`.
+
+---
+
+## Project Roadmap
+
+This is Phase 1 of a 5-phase system:
+
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | Ad Performance Analyzer | ✅ Live |
+| 2 | Agentic orchestration + Advisory Mode | 🔜 Next |
+| 3 | Multi-tenant billing + auth | Planned |
+| 4 | Analytics and pattern detection (product moat) | Planned |
+| 5 | Creative Orchestration Layer + Campaign Launcher | Specced — [view spec](docs/agentic-campaign-launcher-spec.md) |
+
+**Phase 5 vision:** A solo founder types *"I need a campaign for postpartum moms"* and the system generates ad creatives, sets up targeting, and launches directly to Meta — in under 15 minutes. See the [full spec](docs/agentic-campaign-launcher-spec.md).
+
+---
+
+## Repositories
+
+- **Backend:** [joannpraise-oss/agentic-marketing-system](https://github.com/joannpraise-oss/agentic-marketing-system)
+- **Frontend:** [joannpraise-oss/agentic-marketing-ui](https://github.com/joannpraise-oss/agentic-marketing-ui)
+
+---
+
+*Built by [Joann Praise Emmanson-Ogbeide](https://github.com/joannpraise-oss) · Brkeven · 2026*
