@@ -5,6 +5,7 @@ from db.database import get_session
 from services.analysis import analyze_campaign
 from schemas.campaign import CampaignInput
 import logging
+from openai import AuthenticationError, RateLimitError
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -46,9 +47,15 @@ async def analyze_campaign_endpoint(data: CampaignInput, session: Session = Depe
         session.commit()
         logger.info(f"Analysis saved for campaign {campaign.id}. Tokens: {tokens_used}")
 
+        except AuthenticationError:
+           logger.error("OpenAI authentication failed - check API key")
+           raise HTTPException(status_code=500, detail="AI service authentication error. Contact support.")
+    except RateLimitError:
+           logger.error("OpenAI rate limit hit")
+           raise HTTPException(status_code=429, detail="AI service busy. Please retry in a moment.")
     except Exception as e:
-        logger.error(f"Analysis failed for campaign {campaign.id}: {str(e)}")
-        raise HTTPException(status_code=503, detail="Analysis service temporarily unavailable. Campaign data was saved.")
+           logger.error(f"Analysis failed for campaign {campaign.id}: {str(e)}")
+           raise HTTPException(status_code=503, detail="Analysis service temporarily unavailable. Campaign data was saved.")
 
     return {
         "campaign_id": campaign.id,
