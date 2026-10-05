@@ -81,3 +81,15 @@ def test_unhandled_500_still_carries_cors_headers(client, mock_openai):
 
     assert resp.status_code == 500
     assert resp.headers["access-control-allow-origin"] == "https://brkeven.com"
+
+
+def test_rate_limit_returns_503_with_retry_after(client, mock_openai):
+    response = httpx.Response(429, headers={"retry-after": "12"}, request=REQUEST)
+    mock_openai.error = openai.RateLimitError("rate limited", response=response, body=None)
+
+    resp = client.post("/analyze_campaign", json=PAYLOAD)
+
+    assert resp.status_code == 503
+    assert resp.headers["retry-after"] == "12"
+    body = resp.json()
+    assert body["code"] == "ai_busy"
