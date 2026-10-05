@@ -28,7 +28,7 @@ You provide your ad spend and revenue. The system diagnoses what's working, iden
 | Frontend | React + Vite, deployed on Vercel |
 | Backend | FastAPI (Python), deployed on Railway |
 | Database | PostgreSQL via Supabase |
-| AI | OpenAI GPT-4o via Instructor (structured outputs) |
+| AI | OpenAI GPT-4o-mini via Instructor (structured outputs) |
 | Observability | LangSmith tracing |
 
 ---
@@ -42,7 +42,7 @@ React Frontend — Vercel (brkeven.com)
     ↓ POST /analyze_campaign
 FastAPI Backend — Railway
     ↓                        ↓
-OpenAI GPT-4o          Supabase PostgreSQL
+OpenAI GPT-4o-mini     Supabase PostgreSQL
 (campaign analysis)    (campaign + result storage)
     ↓
 LangSmith
@@ -73,16 +73,32 @@ Analyzes a campaign and returns an AI-generated diagnosis.
 ```json
 {
   "campaign_id": 21,
-  "performance_diagnosis": "Strong ROAS of 4.0x indicates healthy campaign performance...",
+  "diagnosis": "Strong ROAS of 4.0x indicates healthy campaign performance...",
   "root_cause": "High revenue relative to spend suggests effective targeting...",
   "optimization_suggestion": "Consider scaling budget by 20-30% while monitoring ROAS...",
   "confidence_score": 0.82,
   "metrics_used": ["spend", "revenue"],
   "missing_metrics": ["ctr", "cac", "impressions"],
-  "tokens_used": 312,
-  "estimated_cost_usd": 0.0031
+  "tokens_used": 312
 }
 ```
+
+**Errors** all share one JSON shape, and every response carries an `X-Request-ID` header:
+
+```json
+{ "detail": "The AI service is busy. Please retry shortly.", "code": "ai_busy", "request_id": "3f9c1a7e2b04", "campaign_id": 21 }
+```
+
+`campaign_id` is present when the campaign was saved before the failure happened.
+
+| Status | `code` | Cause |
+|---|---|---|
+| 400 | `invalid_input` | Missing or invalid request fields (adds an `errors` list) |
+| 500 | `internal_error` | Unexpected error, or our OpenAI credentials were rejected (message is deliberately generic) |
+| 500 | `db_error` | Database failure |
+| 502 | `ai_unavailable` / `ai_bad_response` | Could not reach OpenAI / OpenAI returned an unusable response |
+| 503 | `ai_busy` | OpenAI rate limit or overload; includes a `Retry-After` header |
+| 504 | `ai_timeout` | OpenAI request timed out |
 
 ---
 
@@ -90,7 +106,7 @@ Analyzes a campaign and returns an AI-generated diagnosis.
 
 **Tiered data intelligence:** Only `spend` and `revenue` are required. The AI adjusts its confidence score based on which optional metrics are provided — more data yields higher confidence, but the system never refuses to analyze due to missing fields.
 
-**Structured AI outputs:** GPT-4o responses are validated against a Pydantic schema via Instructor, ensuring the API always returns consistent, well-typed data rather than freeform text.
+**Structured AI outputs:** GPT-4o-mini responses are validated against a Pydantic schema via Instructor, ensuring the API always returns consistent, well-typed data rather than freeform text.
 
 **Session Pooler for Railway + Supabase:** Railway's network cannot reach Supabase's direct IPv6 connection. The Supabase Session Pooler (IPv4-compatible) is required for Railway compatibility.
 
@@ -124,8 +140,17 @@ LANGCHAIN_API_KEY=your_langsmith_key
 LANGCHAIN_PROJECT=agentic-marketing
 ```
 
+Optional: `SQL_ECHO=true` logs every SQL statement (off by default, since it logs parameters), and `LOG_LEVEL` sets the log level (default `INFO`).
+
 ```bash
 uvicorn main:app --reload
+```
+
+Run the tests (no network, database or OpenAI key needed):
+
+```bash
+pip install -r requirements-dev.txt
+pytest
 ```
 
 Backend runs at `http://localhost:8000`. Swagger UI at `http://localhost:8000/docs`.
