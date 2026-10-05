@@ -25,7 +25,7 @@ app = FastAPI(lifespan=lifespan)
 app.middleware("http")(request_logging)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://agentic-marketing-ui.vercel.app", "https://brkeven.com", "https://www.brkeven.com"],
+    allow_origins=["http://localhost:5173", "https://agentic-marketing-ui.vercel.app", "https://brkeven.com", "https://www.brkeven.com", "https://app.brkeven.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
