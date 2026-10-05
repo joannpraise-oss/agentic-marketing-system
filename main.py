@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from core.errors import register_error_handlers
 from db.database import create_tables, engine
 from routers.campaign import router
 
@@ -22,6 +23,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+register_error_handlers(app)
 
 app.include_router(router)
 
