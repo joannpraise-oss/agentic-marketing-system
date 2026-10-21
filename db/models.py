@@ -1,5 +1,7 @@
+from decimal import Decimal
+from sqlalchemy import JSON, Column, Numeric
 from sqlmodel import SQLModel, Field
-from typing import Optional
+from typing import Any, Optional
 from datetime import datetime, timezone
 
 
@@ -27,4 +29,20 @@ class AnalysisResult(SQLModel, table=True):
     suggestion: str
     confidence: float
     tokens_used: int = Field(default=0)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class Asset(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    campaign_brief: str
+    kind: str  # "image" | "video"
+    prompt: str
+    model: str
+    provider: str
+    file_url: Optional[str] = Field(default=None)
+    caption: Optional[str] = Field(default=None)
+    alt_text: Optional[str] = Field(default=None)
+    faq: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    status: str = Field(default="draft")  # "draft" | "approved" | "archived"
+    cost_usd: Decimal = Field(default=Decimal("0"), sa_column=Column(Numeric(10, 4), nullable=False))
     created_at: datetime = Field(default_factory=utcnow)
