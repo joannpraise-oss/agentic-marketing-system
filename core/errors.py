@@ -8,6 +8,9 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from services.higgsfield import HiggsfieldAuthError, HiggsfieldError, HiggsfieldTimeout
+from services.storage import StorageError
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_RETRY_AFTER = 30
@@ -75,6 +78,26 @@ def register_error_handlers(app: FastAPI) -> None:
             else "The daily spend limit has been reached. Please try again tomorrow."
         )
         return error_response(request, 402, "spend_cap_reached", message, scope=exc.scope)
+
+    # Handlers match on the exception's MRO, so the Higgsfield subclasses win over HiggsfieldError.
+    @app.exception_handler(HiggsfieldTimeout)
+    async def image_timeout(request: Request, exc: HiggsfieldTimeout):
+        return error_response(request, 504, "image_timeout", "Image generation timed out. Please try again.")
+
+    @app.exception_handler(HiggsfieldAuthError)
+    async def image_auth(request: Request, exc: HiggsfieldAuthError):
+        logger.critical("Higgsfield credentials problem - check HIGGSFIELD_API_KEY: %s", exc)
+        return internal_error_response(request)
+
+    @app.exception_handler(HiggsfieldError)
+    async def image_provider(request: Request, exc: HiggsfieldError):
+        logger.error("Image provider failed: %s", exc)
+        return error_response(request, 502, "image_provider_error", "The image service failed. Please try again.")
+
+    @app.exception_handler(StorageError)
+    async def storage_error(request: Request, exc: StorageError):
+        logger.error("Storage failed: %s", exc)
+        return error_response(request, 502, "storage_error", "Could not store the generated file. Please try again.")
 
     @app.exception_handler(openai.RateLimitError)
     @app.exception_handler(openai.InternalServerError)
