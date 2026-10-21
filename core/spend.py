@@ -1,7 +1,11 @@
 import os
 from decimal import Decimal
 
-from sqlmodel import Session
+from sqlalchemy import func
+from sqlmodel import Session, select
+
+from core.errors import SpendCapError
+from db.models import Asset, utcnow
 
 DEFAULT_MAX_RUN_COST_USD = "0.25"
 DEFAULT_MAX_DAILY_COST_USD = "5.00"
@@ -31,4 +35,15 @@ def check_spend_caps(session: Session, run_cost: Decimal) -> None:
     hitting the cap exactly is allowed (> vs >=) and keep it consistent with
     your tests.
     """
-    raise NotImplementedError("check_spend_caps is yours to write")
+    # 1. One run too expensive?
+    if run_cost > max_run_cost():
+      raise SpendCapError("run")
+
+    # 2. Today's total (UTC midnight → now) plus this run too high?
+    start_of_day = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    spent_today = session.exec(
+        select(func.coalesce(func.sum(Asset.cost_usd), 0)).where(Asset.created_at >= start_of_day)
+    ).one()
+
+    if spent_today + run_cost > max_daily_cost():
+      raise SpendCapError("daily")
