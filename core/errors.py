@@ -13,6 +13,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_RETRY_AFTER = 30
 
 
+class SpendCapError(Exception):
+    """A generation would push spend past a cap. `scope` is "run" or "daily"."""
+
+    def __init__(self, scope: str):
+        super().__init__(f"{scope} spend cap reached")
+        self.scope = scope
+
+
 def error_response(
     request: Request,
     status_code: int,
@@ -58,6 +66,15 @@ def register_error_handlers(app: FastAPI) -> None:
         return error_response(
             request, exc.status_code, f"http_{exc.status_code}", str(exc.detail), headers=exc.headers
         )
+
+    @app.exception_handler(SpendCapError)
+    async def spend_cap(request: Request, exc: SpendCapError):
+        # 402, not 429: retrying will not help until the cap (or the day) resets.
+        message = (
+            "This run has reached its spend limit." if exc.scope == "run"
+            else "The daily spend limit has been reached. Please try again tomorrow."
+        )
+        return error_response(request, 402, "spend_cap_reached", message, scope=exc.scope)
 
     @app.exception_handler(openai.RateLimitError)
     @app.exception_handler(openai.InternalServerError)
