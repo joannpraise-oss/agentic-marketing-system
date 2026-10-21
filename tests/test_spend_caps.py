@@ -29,5 +29,5 @@ def test_hitting_daily_cap_exactly_is_allowed(engine):
 def test_single_run_over_run_cap_is_blocked(engine):
     with Session(engine) as session:
         with pytest.raises(SpendCapError) as err:
-            check_spend_caps(session, Decimal("0.30"))
+            check_spend_caps(session, Decimal("0.60"))
         assert err.value.scope == "run"

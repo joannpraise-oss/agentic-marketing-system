@@ -33,7 +33,7 @@ def test_spend_cap_maps_to_402_standard_shape(client, scope):
 def test_caps_default_and_read_from_env(monkeypatch):
     monkeypatch.delenv("MAX_RUN_COST_USD", raising=False)
     monkeypatch.delenv("MAX_DAILY_COST_USD", raising=False)
-    assert spend.max_run_cost() == Decimal("0.25")
+    assert spend.max_run_cost() == Decimal("0.50")
     assert spend.max_daily_cost() == Decimal("5.00")
 
     monkeypatch.setenv("MAX_RUN_COST_USD", "1.5")

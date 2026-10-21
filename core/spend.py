@@ -7,7 +7,7 @@ from sqlmodel import Session, select
 from core.errors import SpendCapError
 from db.models import Asset, utcnow
 
-DEFAULT_MAX_RUN_COST_USD = "0.25"
+DEFAULT_MAX_RUN_COST_USD = "0.50"
 DEFAULT_MAX_DAILY_COST_USD = "5.00"
 
 
