@@ -8,6 +8,7 @@ from core.log_config import configure_logging
 from core.middleware import request_logging
 from db.database import create_tables, engine
 from routers.campaign import router
+from routers.creative import router as creative_router
 
 configure_logging()
 
@@ -34,6 +35,7 @@ app.add_middleware(
 register_error_handlers(app)
 
 app.include_router(router)
+app.include_router(creative_router)
 
 
 @app.get("/")
