@@ -75,13 +75,11 @@ def _call(method: str, path: str, **kwargs) -> dict:
         raise HiggsfieldError("Higgsfield returned invalid JSON.") from None
 
 
-def estimate_cost(prompt: str = "cost estimate") -> Decimal:
+def estimate_cost() -> Decimal:
     """USD cost of one image with IMAGE_PARAMS. Higgsfield only charges completed jobs."""
-    body = _call("POST", f"/estimate/{MODEL}", json={"prompt": prompt, **IMAGE_PARAMS})
-    try:
-        return Decimal(str(body["usd"]))
-    except (KeyError, ArithmeticError):
-        raise HiggsfieldError("Higgsfield estimate had no usable 'usd' value.") from None
+    # From a live POST /estimate/higgsfield-ai/soul/v2/standard check on 2026-10-21
+    # (1:1, 1080p, 1 image): usd "0.006", credits "0.090". Re-check if IMAGE_PARAMS change.
+    return Decimal("0.006")
 
 
 def _cancel_quietly(request_id: str) -> None:

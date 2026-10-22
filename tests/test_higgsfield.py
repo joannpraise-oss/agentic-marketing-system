@@ -44,8 +44,6 @@ class FakeHiggsfield:
     def request(self, method, url, **kwargs):
         self.calls.append((method, url, kwargs))
         req = httpx.Request(method, url)
-        if url.endswith("/estimate/" + higgsfield.MODEL):
-            return httpx.Response(200, json={"credits": "1.500", "usd": "0.094"}, request=req)
         if url.endswith("/" + higgsfield.MODEL):
             return httpx.Response(self.submit_status, json={"status": "queued", "request_id": "r1"}, request=req)
         if url.endswith("/cancel"):
@@ -94,15 +92,13 @@ def test_generate_polls_until_completed_and_downloads(fake):
     assert "headers" not in fake.downloads[0][1]
 
 
-def test_submit_and_estimate_send_supported_resolution(fake):
+def test_submit_sends_supported_resolution(fake):
     # Soul v2 standard only accepts "720p" / "1080p"; "2K" is rejected by the live API.
-    run(FakeClock())
-    higgsfield.estimate_cost()
+    assert higgsfield.IMAGE_PARAMS["resolution"] == "1080p"
 
-    submit, estimate = fake.calls[0], fake.calls[-1]
-    assert submit[2]["json"]["resolution"] == "1080p"
-    assert estimate[1].endswith("/estimate/" + higgsfield.MODEL)
-    assert estimate[2]["json"]["resolution"] == "1080p"
+    run(FakeClock())
+
+    assert fake.calls[0][2]["json"]["resolution"] == "1080p"
 
 
 def test_poll_delay_backs_off_and_caps(fake):
@@ -158,8 +154,10 @@ def test_missing_key_is_auth_error(fake, monkeypatch):
     assert fake.calls == []
 
 
-def test_estimate_cost_returns_decimal_usd(fake):
-    assert higgsfield.estimate_cost() == Decimal("0.094")
+def test_estimate_cost_is_live_checked_price_without_api_call(fake):
+    # Pinned from the 2026-10-21 live /estimate check at 1:1, 1080p, 1 image.
+    assert higgsfield.estimate_cost() == Decimal("0.006")
+    assert fake.calls == []
 
 
 # --- error mapping through core/errors.py ---
