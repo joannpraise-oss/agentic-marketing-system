@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.higgsfield.ai"
 PROVIDER = "higgsfield"
 MODEL = "higgsfield-ai/soul/v2/standard"
-IMAGE_PARAMS = {"aspect_ratio": "1:1", "resolution": "2K", "num_images": 1}
+IMAGE_PARAMS = {"aspect_ratio": "1:1", "resolution": "1080p", "num_images": 1}
 
 HTTP_TIMEOUT_SECONDS = 30
 GENERATION_TIMEOUT_SECONDS = 120

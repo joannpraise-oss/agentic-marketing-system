@@ -94,6 +94,17 @@ def test_generate_polls_until_completed_and_downloads(fake):
     assert "headers" not in fake.downloads[0][1]
 
 
+def test_submit_and_estimate_send_supported_resolution(fake):
+    # Soul v2 standard only accepts "720p" / "1080p"; "2K" is rejected by the live API.
+    run(FakeClock())
+    higgsfield.estimate_cost()
+
+    submit, estimate = fake.calls[0], fake.calls[-1]
+    assert submit[2]["json"]["resolution"] == "1080p"
+    assert estimate[1].endswith("/estimate/" + higgsfield.MODEL)
+    assert estimate[2]["json"]["resolution"] == "1080p"
+
+
 def test_poll_delay_backs_off_and_caps(fake):
     fake.statuses = ["queued"] * 8 + ["completed"]
     clock = FakeClock()
