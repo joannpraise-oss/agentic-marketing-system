@@ -8,8 +8,9 @@ import instructor
 from dotenv import load_dotenv
 from langsmith import wrappers
 from openai import OpenAI
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
+from core.placeholders import asset_texts, find_placeholders
 from schemas.creative import CreativeRequest
 
 load_dotenv()
@@ -44,6 +45,21 @@ class CreativeItem(BaseModel):
     caption: str = Field(description="Ad caption in the brand voice.")
     alt_text: str = Field(description="Literal description of the image for screen readers.")
     faq: list[FAQ] = Field(min_length=2, max_length=2)
+    needs_input: list[str] = Field(
+        default_factory=list,
+        description="Every [▢ ...] placeholder used in the caption or FAQ, copied exactly.",
+    )
+
+    @model_validator(mode="after")
+    def placeholders_are_tracked(self) -> "CreativeItem":
+        # Placeholders would be drawn into the image or read out by screen readers.
+        if find_placeholders([self.prompt]):
+            raise ValueError("The image prompt must not contain [▢ ...] placeholders.")
+        if find_placeholders([self.alt_text]):
+            raise ValueError("alt_text must describe the image and not contain [▢ ...] placeholders.")
+        # The text is the source of truth: needs_input always lists exactly what's in it.
+        self.needs_input = find_placeholders(asset_texts(self.caption, None, self.faq))
+        return self
 
 
 class CreativePlan(BaseModel):
@@ -158,6 +174,7 @@ For each concept:
 - caption: ad copy in the brand voice, written for the audience
 - alt_text: a literal description of what the image shows, not marketing copy
 - faq: exactly 2 questions a shopper in this audience would ask, with answers
+- needs_input: every [▢ ...] placeholder used in the caption or FAQ, copied exactly
 
 CHECK (every concept must pass all three, or revise it):
 - Clarity: would a buyer understand what is being sold within 2 seconds?
@@ -171,8 +188,21 @@ RULES:
 - People must be fictional. Never depict a real or recognizable person.
 - Captions must not read as a real customer testimonial (no names, no "I've
   used this for 3 weeks"). Speak as the brand.
-- Make no claims the brief does not support: no prices, health or medical
-  claims, guarantees, or results.
+- Classify every claim in the caption and FAQ before writing it:
+  * from-brief: stated in the BRIEF or BRAND above. Use it as given.
+  * general-category: true of this kind of product in general (e.g. "trail
+    shoes have lugged soles"). Allowed, but never phrased as a brand promise.
+  * brand-specific: a fact about THIS brand or product that is not in the
+    brief - policies, returns, prices, discounts, specs, materials, sizes,
+    shipping, guarantees, warranties, certifications, awards, results.
+    NEVER invent these. Write a placeholder instead, in exactly this form:
+    [▢ description, e.g. example]
+    e.g. "Free returns within [▢ return window, e.g. 30 days]."
+- If an FAQ answer depends on a brand-specific fact, answer with a placeholder
+  rather than guessing.
+- Placeholders go only in the caption and FAQ, never in the image prompt or
+  alt_text.
+- No health or medical claims, and no performance results, unless the brief states them.
 """
 
 

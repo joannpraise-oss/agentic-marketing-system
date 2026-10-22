@@ -5,6 +5,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from fastapi import APIRouter, Depends
 from sqlmodel import Session
 
+from core.placeholders import asset_texts, find_placeholders
 from core.spend import check_spend_caps
 from db.database import get_session
 from db.models import Asset
@@ -81,4 +82,12 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
         logger.warning("Creative run had %s failed image(s) of %s", len(errors), len(outcomes))
         raise errors[0]
 
-    return {"assets": [asset.model_dump(mode="json") for asset in assets]}
+    return {"assets": [_asset_out(asset) for asset in assets]}
+
+
+def _asset_out(asset: Asset) -> dict:
+    # needs_input is derived from the text, so it can never disagree with what's in the asset.
+    return {
+        **asset.model_dump(mode="json"),
+        "needs_input": find_placeholders(asset_texts(asset.caption, asset.alt_text, asset.faq)),
+    }

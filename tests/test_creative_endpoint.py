@@ -64,6 +64,7 @@ def test_generate_saves_three_drafts_with_format_and_real_cost(client, engine, m
     assert [a["format"] for a in body] == ["ugc", "lifestyle", "flat_lay"]
     assert [a["status"] for a in body] == ["draft"] * 3
     assert [a["file_url"] for a in body] == [f"https://cdn.example/{p}.png" for p in ("track", "beach", "city")]
+    assert [a["needs_input"] for a in body] == [[], [], []]
 
     assets = saved_assets(engine)
     assert len(assets) == 3
@@ -76,6 +77,17 @@ def test_generate_saves_three_drafts_with_format_and_real_cost(client, engine, m
         # $0.006 image + $0.00105 / 3 planning = $0.00635, rounded to 4 places
         assert asset.cost_usd == Decimal("0.0064")
     assert sorted(mocks.generated) == ["beach", "city", "track"]
+
+
+def test_response_lists_placeholders_still_needing_input(client, monkeypatch, mocks):
+    plan = make_plan()
+    plan.items[0].caption = "Free returns within [▢ return window, e.g. 30 days]."
+    monkeypatch.setattr(creative, "plan_creatives", lambda request: (plan, Decimal("0.001")))
+
+    body = client.post("/creative/generate", json=PAYLOAD).json()["assets"]
+
+    assert body[0]["needs_input"] == ["[▢ return window, e.g. 30 days]"]
+    assert body[1]["needs_input"] == []
 
 
 def test_real_build_prompt_reaches_the_planner(client, mocks):

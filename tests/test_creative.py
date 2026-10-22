@@ -117,3 +117,47 @@ def test_missing_trend_notes_returns_empty(monkeypatch, tmp_path):
 
 
 
+
+
+# --- brand-specific claims become placeholders ---
+
+RETURNS = "[▢ return window, e.g. 30 days]"
+SHIPPING = "[▢ shipping time, e.g. 3-5 business days]"
+
+
+def test_needs_input_lists_placeholders_from_caption_and_faq_in_order():
+    item = make_item("a")
+    item["caption"] = f"Free returns within {RETURNS}. Ships in {SHIPPING}."
+    item["faq"][1]["answer"] = f"Yes, within {RETURNS}."
+
+    parsed = creative.CreativeItem(**item)
+
+    assert parsed.needs_input == [RETURNS, SHIPPING]
+
+
+def test_needs_input_is_rebuilt_from_the_text_not_trusted_from_the_model():
+    item = make_item("a")
+    item["caption"] = f"Ships in {SHIPPING}."
+    item["needs_input"] = ["[▢ something not in the text]"]
+
+    assert creative.CreativeItem(**item).needs_input == [SHIPPING]
+
+
+def test_no_placeholders_means_empty_needs_input():
+    assert creative.CreativeItem(**make_item("a")).needs_input == []
+
+
+@pytest.mark.parametrize("field", ["prompt", "alt_text"])
+def test_placeholders_rejected_in_prompt_and_alt_text(field):
+    item = make_item("a")
+    item[field] = f"{item[field]} {RETURNS}"
+
+    with pytest.raises(ValidationError, match="placeholder"):
+        creative.CreativeItem(**item)
+
+
+def test_build_prompt_requires_claim_classes_and_placeholder_form():
+    prompt = creative.build_prompt(REQUEST, "notes")
+
+    for phrase in ("from-brief", "general-category", "brand-specific", "[▢ description, e.g. example]", "needs_input"):
+        assert phrase in prompt
