@@ -116,6 +116,4 @@ def test_missing_trend_notes_returns_empty(monkeypatch, tmp_path):
     assert creative.load_trend_notes() == ""
 
 
-def test_build_prompt_is_a_stub_for_now():
-    with pytest.raises(NotImplementedError):
-        creative.build_prompt(REQUEST, "notes")
+

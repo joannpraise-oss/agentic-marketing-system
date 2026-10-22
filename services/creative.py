@@ -110,7 +110,70 @@ def build_prompt(request: CreativeRequest, trend_notes: str) -> str:
     through CreativePlan, so describe the *content* you want rather than the
     JSON shape.
     """
-    raise NotImplementedError("build_prompt is yours to write")
+    brand = request.brand
+    palette = ", ".join(brand.colors) if brand.colors else "no fixed palette"
+    goal = request.goal or "no specific goal"
+    platform = request.platform or "platform-agnostic"
+    trends = f"\nTREND NOTES (background context, not rules):\n{trend_notes}\n" if trend_notes.strip() else ""
+
+    return f"""You are a senior performance creative director planning paid social ads.
+
+BRIEF:
+{request.brief}
+
+BRAND:
+- Name: {brand.brand_name}
+- Voice: {brand.voice}
+- Colors: {palette}
+- Product: {brand.product}
+- Audience: {brand.audience}
+
+CONTEXT:
+- Goal: {goal}
+- Platform: {platform}
+{trends}
+ANALYZE (before choosing any image):
+1. What is this product, in one plain sentence a stranger would understand?
+2. What specific pain or desire does it solve for this audience, and what does
+   that problem look like in real life?
+3. Who is the cold buyer who has never heard of this brand, and what would they
+   need to see to trust it enough to buy?
+
+TASK:
+Create exactly 3 ad concepts, each in a DIFFERENT format chosen to fit this
+brand, goal and platform:
+- ugc: phone-camera feel, a fictional person using the product at home
+- model_with_product: a fictional model wearing, holding or applying it
+- lifestyle: the product in a styled real-world setting
+- studio_hero: clean background, the product as the star
+- flat_lay: product and props arranged top-down
+- problem_solution: shows the pain point and the product solving it
+- seasonal: tied to a holiday, gifting or a timely moment
+
+For each concept:
+- format: one of the formats above, no repeats
+- rationale: one sentence on why this format suits this brand and buyer
+- prompt: a self-contained image prompt covering subject, setting, lighting,
+  composition, style and the brand colors
+- caption: ad copy in the brand voice, written for the audience
+- alt_text: a literal description of what the image shows, not marketing copy
+- faq: exactly 2 questions a shopper in this audience would ask, with answers
+
+CHECK (every concept must pass all three, or revise it):
+- Clarity: would a buyer understand what is being sold within 2 seconds?
+- Pain solved: can the buyer SEE their problem being solved, not just the
+  product sitting there?
+- Stranger test: would someone who never knew this brand buy from this image alone?
+
+RULES:
+- Square 1:1 composition.
+- No text, words, logos or watermarks rendered inside the image.
+- People must be fictional. Never depict a real or recognizable person.
+- Captions must not read as a real customer testimonial (no names, no "I've
+  used this for 3 weeks"). Speak as the brand.
+- Make no claims the brief does not support: no prices, health or medical
+  claims, guarantees, or results.
+"""
 
 
 def plan_creatives(request: CreativeRequest) -> tuple[CreativePlan, Decimal]:
