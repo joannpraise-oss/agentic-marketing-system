@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from core.placeholders import PlaceholdersRemainError
 from services.higgsfield import HiggsfieldAuthError, HiggsfieldError, HiggsfieldTimeout
 from services.storage import StorageError
 
@@ -78,6 +79,14 @@ def register_error_handlers(app: FastAPI) -> None:
             else "The daily spend limit has been reached. Please try again tomorrow."
         )
         return error_response(request, 402, "spend_cap_reached", message, scope=exc.scope)
+
+    @app.exception_handler(PlaceholdersRemainError)
+    async def placeholders_remain(request: Request, exc: PlaceholdersRemainError):
+        return error_response(
+            request, 409, "needs_input",
+            "Fill in every [▢ ...] placeholder before approving this asset.",
+            needs_input=exc.placeholders,
+        )
 
     # Handlers match on the exception's MRO, so the Higgsfield subclasses win over HiggsfieldError.
     @app.exception_handler(HiggsfieldTimeout)

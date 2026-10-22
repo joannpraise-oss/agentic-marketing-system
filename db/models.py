@@ -1,8 +1,10 @@
 from decimal import Decimal
-from sqlalchemy import JSON, Column, Numeric
+from sqlalchemy import JSON, Column, Numeric, event
 from sqlmodel import SQLModel, Field
 from typing import Any, Optional
 from datetime import datetime, timezone
+
+from core.placeholders import PlaceholdersRemainError, asset_texts, find_placeholders
 
 
 def utcnow() -> datetime:
@@ -47,3 +49,13 @@ class Asset(SQLModel, table=True):
     status: str = Field(default="draft")  # "draft" | "approved" | "archived"
     cost_usd: Decimal = Field(default=Decimal("0"), sa_column=Column(Numeric(10, 4), nullable=False))
     created_at: datetime = Field(default_factory=utcnow)
+
+
+@event.listens_for(Asset, "before_insert")
+@event.listens_for(Asset, "before_update")
+def _block_approval_while_placeholders_remain(mapper, connection, asset: Asset) -> None:
+    # Runs on every flush, so no code path can save an approved asset with unfilled placeholders.
+    if asset.status == "approved":
+        remaining = find_placeholders(asset_texts(asset.caption, asset.alt_text, asset.faq))
+        if remaining:
+            raise PlaceholdersRemainError(remaining)
