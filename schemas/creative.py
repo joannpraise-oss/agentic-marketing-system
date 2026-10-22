@@ -1,3 +1,5 @@
+from typing import Literal, Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -12,3 +14,5 @@ class Brand(BaseModel):
 class CreativeRequest(BaseModel):
     brief: str = Field(min_length=1)
     brand: Brand
+    goal: Optional[Literal["awareness", "sales", "launch"]] = None
+    platform: Optional[Literal["instagram", "tiktok"]] = None
