@@ -8,10 +8,21 @@ logger = logging.getLogger(__name__)
 
 BUCKET = "assets"
 TIMEOUT_SECONDS = 30
+LEGACY_JWT_PREFIX = "eyJ"  # legacy service_role keys are JWTs; new keys look like sb_secret_...
+MAX_LOGGED_ERROR_CHARS = 300
 
 
 class StorageError(Exception):
     """Upload failed. The message never contains credentials or response bodies."""
+
+
+def check_supabase_url() -> None:
+    """Fail fast at startup on a REST endpoint URL instead of the project URL."""
+    url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    if url.endswith("/rest/v1"):
+        raise RuntimeError(
+            "SUPABASE_URL must be the project URL (https://<ref>.supabase.co), not the /rest/v1 endpoint."
+        )
 
 
 def _config() -> tuple[str, str]:
@@ -19,7 +30,29 @@ def _config() -> tuple[str, str]:
     key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     if not url or not key:
         raise StorageError("Supabase storage is not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY).")
+    if url.endswith("/rest/v1"):
+        raise StorageError("SUPABASE_URL must not end in /rest/v1.")
     return url, key
+
+
+def _auth_headers(key: str) -> dict[str, str]:
+    # New sb_secret_ keys go only in `apikey`; only legacy JWT keys may also be sent as a Bearer token.
+    headers = {"apikey": key}
+    if key.startswith(LEGACY_JWT_PREFIX):
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
+def _error_message(response: httpx.Response, key: str) -> str:
+    """Supabase's own explanation: only the `error` / `message` fields, never the key."""
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    parts = [str(body[field]) for field in ("error", "message") if body.get(field)]
+    return ": ".join(parts).replace(key, "[redacted]")[:MAX_LOGGED_ERROR_CHARS]
 
 
 def upload_asset(data: bytes, content_type: str, extension: str = "") -> str:
@@ -30,12 +63,15 @@ def upload_asset(data: bytes, content_type: str, extension: str = "") -> str:
         response = httpx.post(
             f"{base_url}/storage/v1/object/{BUCKET}/{path}",
             content=data,
-            headers={"Authorization": f"Bearer {key}", "Content-Type": content_type},
+            headers={**_auth_headers(key), "Content-Type": content_type},
             timeout=TIMEOUT_SECONDS,
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        logger.error("Storage upload rejected with status %s", exc.response.status_code)
+        logger.error(
+            "Storage upload rejected with status %s: %s",
+            exc.response.status_code, _error_message(exc.response, key) or "no error message",
+        )
         raise StorageError(f"Storage upload failed with status {exc.response.status_code}.") from None
     except httpx.HTTPError as exc:
         logger.error("Storage upload failed: %s", type(exc).__name__)

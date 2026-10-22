@@ -9,12 +9,14 @@ from core.middleware import request_logging
 from db.database import create_tables, engine
 from routers.campaign import router
 from routers.creative import router as creative_router
+from services.storage import check_supabase_url
 
 configure_logging()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    check_supabase_url()
     create_tables()
     yield
     engine.dispose()
