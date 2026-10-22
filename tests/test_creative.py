@@ -15,7 +15,7 @@ def make_item(prompt, format="ugc"):
     faq = [{"question": "Q1?", "answer": "A1."}, {"question": "Q2?", "answer": "A2."}]
     return {
         "format": format, "rationale": "Fits the brand.",
-        "prompt": prompt, "caption": "c", "alt_text": "a", "faq": faq,
+        "prompt": f"{creative.FORMAT_OPENERS.get(format, 'Photo')} of {prompt}", "caption": "c", "alt_text": "a", "faq": faq,
     }
 
 
@@ -66,7 +66,6 @@ def test_plan_creatives_passes_request_and_trend_notes_to_build_prompt(mock_plan
 @pytest.mark.parametrize("items", [
     [make_item("a", "ugc"), make_item("b", "lifestyle")],  # too few
     [make_item("a", "ugc"), make_item("b", "lifestyle"), make_item("c", "flat_lay"), make_item("d", "seasonal")],  # too many
-    [make_item("a", "ugc"), make_item("A ", "lifestyle"), make_item("c", "flat_lay")],  # duplicate prompts
     [make_item("a", "ugc"), make_item("b", "ugc"), make_item("c", "flat_lay")],  # duplicate formats
 ])
 def test_plan_requires_three_distinct_items(items):
@@ -161,3 +160,52 @@ def test_build_prompt_requires_claim_classes_and_placeholder_form():
 
     for phrase in ("from-brief", "general-category", "brand-specific", "[▢ description, e.g. example]", "needs_input"):
         assert phrase in prompt
+
+
+# --- each prompt must match its format ---
+
+@pytest.mark.parametrize("format, opener", list(creative.FORMAT_OPENERS.items()))
+def test_prompt_must_start_with_its_format_opener(format, opener):
+    item = make_item("a", format)
+    assert creative.CreativeItem(**item).prompt.startswith(opener)
+
+    item["prompt"] = "Photo of trail shoes on a rock"
+    with pytest.raises(ValidationError, match=f'must start with "{opener}"'):
+        creative.CreativeItem(**item)
+
+
+def test_opener_check_ignores_case_and_leading_space():
+    item = make_item("a", "lifestyle")
+    item["prompt"] = "  eye-level LIFESTYLE photo of a runner at a trailhead"
+    creative.CreativeItem(**item)
+
+
+@pytest.mark.parametrize("prompt_tail", [
+    "trail shoes, a map and a compass arranged as a flat lay on wood",
+    "shot top-down on a wooden table",
+    "bird's-eye view of shoes and gear",
+])
+def test_flat_lay_framing_rejected_under_another_format(prompt_tail):
+    # Asset 9 was labeled lifestyle but rendered as a flat lay.
+    item = make_item("a", "lifestyle")
+    item["prompt"] = f"Eye-level lifestyle photo, {prompt_tail}"
+
+    with pytest.raises(ValidationError, match="describes a flat lay"):
+        creative.CreativeItem(**item)
+
+
+def test_flat_lay_framing_allowed_for_flat_lay_and_overhead_lighting_allowed_anywhere():
+    flat = make_item("a", "flat_lay")
+    flat["prompt"] = "Top-down flat lay of trail shoes, bird's-eye view, on slate"
+    creative.CreativeItem(**flat)
+
+    studio = make_item("a", "studio_hero")
+    studio["prompt"] = "Studio hero shot of a trail shoe under soft overhead lighting"
+    creative.CreativeItem(**studio)
+
+
+def test_build_prompt_tells_the_model_each_opener():
+    prompt = creative.build_prompt(REQUEST, "notes")
+
+    for opener in creative.FORMAT_OPENERS.values():
+        assert f'starts with "{opener}"' in prompt

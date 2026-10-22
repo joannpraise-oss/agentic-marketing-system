@@ -32,10 +32,11 @@ def mocks(monkeypatch):
         return make_plan(), SimpleNamespace(usage=usage)
 
     def generate_image(prompt):
-        state.generated.append(prompt)
-        if prompt in state.fail:
-            raise state.fail[prompt]
-        return higgsfield.GeneratedImage(data=f"img:{prompt}".encode(), content_type="image/png", request_id=f"r-{prompt}")
+        key = prompt.split()[-1]  # make_item prompts end with a short key: "track", "beach", "city"
+        state.generated.append(key)
+        if key in state.fail:
+            raise state.fail[key]
+        return higgsfield.GeneratedImage(data=f"img:{key}".encode(), content_type="image/png", request_id=f"r-{key}")
 
     def upload_asset(data, content_type, extension=""):
         state.uploads.append((data, content_type, extension))

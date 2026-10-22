@@ -32,6 +32,23 @@ CreativeFormat = Literal[
     "ugc", "model_with_product", "lifestyle", "studio_hero", "flat_lay", "problem_solution", "seasonal"
 ]
 
+# Every image prompt must open with its format's framing, so the label and the picture agree.
+FORMAT_OPENERS: dict[str, str] = {
+    "ugc": "Candid smartphone photo",
+    "model_with_product": "Photo of a fictional model",
+    "lifestyle": "Eye-level lifestyle photo",
+    "studio_hero": "Studio hero shot",
+    "flat_lay": "Top-down flat lay",
+    "problem_solution": "Problem-solution photo",
+    "seasonal": "Seasonal photo",
+}
+# Overhead framing is what makes a flat lay; it isn't allowed under any other label.
+# ("overhead" alone is left out: "overhead lighting" is common in normal prompts.)
+FLAT_LAY_CUES = (
+    "flat lay", "flat-lay", "flatlay", "top-down", "top down", "overhead shot", "overhead view",
+    "from directly above", "bird's-eye", "bird's eye", "birds-eye",
+)
+
 
 class FAQ(BaseModel):
     question: str
@@ -57,6 +74,13 @@ class CreativeItem(BaseModel):
             raise ValueError("The image prompt must not contain [▢ ...] placeholders.")
         if find_placeholders([self.alt_text]):
             raise ValueError("alt_text must describe the image and not contain [▢ ...] placeholders.")
+        opener = FORMAT_OPENERS[self.format]
+        if not self.prompt.strip().lower().startswith(opener.lower()):
+            raise ValueError(f'A {self.format} prompt must start with "{opener}".')
+        if self.format != "flat_lay":
+            cue = next((c for c in FLAT_LAY_CUES if c in self.prompt.lower()), None)
+            if cue:
+                raise ValueError(f'"{cue}" describes a flat lay, not {self.format}. Change the framing or the format.')
         # The text is the source of truth: needs_input always lists exactly what's in it.
         self.needs_input = find_placeholders(asset_texts(self.caption, None, self.faq))
         return self
@@ -159,18 +183,27 @@ TASK:
 Create exactly 3 ad concepts, each in a DIFFERENT format chosen to fit this
 brand, goal and platform:
 - ugc: phone-camera feel, a fictional person using the product at home
+  (prompt starts with "{FORMAT_OPENERS['ugc']}")
 - model_with_product: a fictional model wearing, holding or applying it
+  (prompt starts with "{FORMAT_OPENERS['model_with_product']}")
 - lifestyle: the product in a styled real-world setting
+  (prompt starts with "{FORMAT_OPENERS['lifestyle']}")
 - studio_hero: clean background, the product as the star
+  (prompt starts with "{FORMAT_OPENERS['studio_hero']}")
 - flat_lay: product and props arranged top-down
+  (prompt starts with "{FORMAT_OPENERS['flat_lay']}")
 - problem_solution: shows the pain point and the product solving it
+  (prompt starts with "{FORMAT_OPENERS['problem_solution']}")
 - seasonal: tied to a holiday, gifting or a timely moment
+  (prompt starts with "{FORMAT_OPENERS['seasonal']}")
 
 For each concept:
 - format: one of the formats above, no repeats
 - rationale: one sentence on why this format suits this brand and buyer
 - prompt: a self-contained image prompt covering subject, setting, lighting,
-  composition, style and the brand colors
+  composition, style and the brand colors. It MUST start with its format's
+  opening phrase above, and the scene must match that format. Words like
+  "flat lay", "top-down" or "bird's-eye" belong only to flat_lay.
 - caption: ad copy in the brand voice, written for the audience
 - alt_text: a literal description of what the image shows, not marketing copy
 - faq: exactly 2 questions a shopper in this audience would ask, with answers
