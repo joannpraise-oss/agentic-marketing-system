@@ -209,3 +209,19 @@ def test_build_prompt_tells_the_model_each_opener():
 
     for opener in creative.FORMAT_OPENERS.values():
         assert f'starts with "{opener}"' in prompt
+
+
+def test_build_prompt_says_placeholders_replace_the_whole_claim():
+    prompt = creative.build_prompt(REQUEST, "notes")
+
+    assert "replaces the WHOLE unsupported claim" in prompt
+    assert "[▢ return policy, e.g. free 30-day returns]" in prompt
+    # The old partial-placeholder example must not come back as a model to copy.
+    assert 'Wrong: "Free returns within [▢ return window, e.g. 30 days]."' in prompt
+    assert prompt.count("Free returns within [▢") == 1
+
+
+def test_build_prompt_forbids_hints_about_future_products():
+    prompt = creative.build_prompt(REQUEST, "notes")
+
+    assert "Do not hint at future products, releases" in prompt

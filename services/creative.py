@@ -230,9 +230,16 @@ RULES:
     shipping, guarantees, warranties, certifications, awards, results.
     NEVER invent these. Write a placeholder instead, in exactly this form:
     [▢ description, e.g. example]
-    e.g. "Free returns within [▢ return window, e.g. 30 days]."
-- If an FAQ answer depends on a brand-specific fact, answer with a placeholder
-  rather than guessing.
+- A placeholder replaces the WHOLE unsupported claim, not just the number or
+  detail inside it. Surrounding words must not assert anything either.
+    Wrong: "Free returns within [▢ return window, e.g. 30 days]." (still claims free returns)
+    Right: "[▢ return policy, e.g. free 30-day returns]"
+    Wrong: "Ships free in [▢ shipping time, e.g. 3-5 days]." (still claims free shipping)
+    Right: "[▢ shipping offer, e.g. free shipping in 3-5 days]"
+- If an FAQ answer depends on a brand-specific fact, the answer is the
+  placeholder for that whole fact, not a guess wrapped around one.
+- Do not hint at future products, releases, drops, collections or "coming
+  soon" news unless the brief states them.
 - Placeholders go only in the caption and FAQ, never in the image prompt or
   alt_text.
 - No health or medical claims, and no performance results, unless the brief states them.
