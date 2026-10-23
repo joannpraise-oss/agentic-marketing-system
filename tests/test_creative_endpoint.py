@@ -66,6 +66,7 @@ def test_generate_saves_three_drafts_with_format_and_real_cost(client, engine, m
     assert [a["status"] for a in body] == ["draft"] * 3
     assert [a["file_url"] for a in body] == [f"https://cdn.example/{p}.png" for p in ("track", "beach", "city")]
     assert [a["needs_input"] for a in body] == [[], [], []]
+    assert resp.json()["failed_count"] == 0 and resp.json()["failed"] == []
 
     assets = saved_assets(engine)
     assert len(assets) == 3
@@ -113,43 +114,96 @@ def test_spend_cap_blocks_before_any_spend(client, engine, mocks):
     assert len(saved_assets(engine)) == 1
 
 
-@pytest.mark.parametrize("error, status, code", [
-    (higgsfield.HiggsfieldTimeout("slow"), 504, "image_timeout"),
-    (higgsfield.HiggsfieldError("nsfw"), 502, "image_provider_error"),
+@pytest.mark.parametrize("error, code", [
+    (higgsfield.HiggsfieldTimeout("Image generation did not finish within 120s."), "image_timeout"),
+    (higgsfield.HiggsfieldError("Image generation ended as 'nsfw'."), "image_provider_error"),
 ])
-def test_failed_image_returns_error_and_keeps_paid_ones(client, engine, mocks, error, status, code):
+def test_one_failed_image_returns_200_with_drafts_and_failed_list(client, engine, mocks, error, code):
     mocks.fail["beach"] = error
 
     resp = client.post("/creative/generate", json=PAYLOAD)
 
-    assert resp.status_code == status
-    assert resp.json()["code"] == code
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert [a["format"] for a in body["assets"]] == ["ugc", "flat_lay"]
+    assert body["failed_count"] == 1
+    assert body["failed"] == [{"format": "lifestyle", "code": code, "reason": str(error), "asset_id": None}]
     assets = saved_assets(engine)
     assert sorted(a.format for a in assets) == ["flat_lay", "ugc"]
     # Planning cost is spread over the 2 saved assets: 0.006 + 0.00105 / 2 = 0.006525
     assert all(a.cost_usd == Decimal("0.0065") for a in assets)
 
 
-def test_upload_failure_still_records_the_paid_image(client, engine, mocks):
-    mocks.upload_fail["city"] = storage.StorageError("Storage upload failed with status 500.")
+def test_failed_upload_returns_200_and_points_at_the_saved_paid_asset(client, engine, mocks):
+    # The live case: one upload hit a network error (after storage's own retries).
+    mocks.upload_fail["city"] = storage.StorageError("Storage upload failed: network error (ReadError).")
 
     resp = client.post("/creative/generate", json=PAYLOAD)
 
-    assert resp.status_code == 502
-    assert resp.json()["code"] == "storage_error"
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert [a["format"] for a in body["assets"]] == ["ugc", "lifestyle"]
+    assert all(a["file_url"] for a in body["assets"])
     assets = {a.format: a for a in saved_assets(engine)}
-    assert len(assets) == 3
+    assert len(assets) == 3  # the paid image is still recorded for the spend cap
     assert assets["flat_lay"].file_url is None
-    assert assets["ugc"].file_url.startswith("https://cdn.example/")
+    assert body["failed_count"] == 1
+    assert body["failed"] == [{
+        "format": "flat_lay", "code": "storage_error",
+        "reason": "Storage upload failed: network error (ReadError).",
+        "asset_id": assets["flat_lay"].id,
+    }]
 
 
-def test_all_images_failing_saves_nothing(client, engine, mocks):
+def test_mixed_failures_are_all_listed(client, mocks):
+    mocks.fail["track"] = higgsfield.HiggsfieldTimeout("slow")
+    mocks.upload_fail["city"] = storage.StorageError("Storage upload failed with status 503.")
+
+    body = client.post("/creative/generate", json=PAYLOAD).json()
+
+    assert [a["format"] for a in body["assets"]] == ["lifestyle"]
+    assert body["failed_count"] == 2
+    assert [(f["format"], f["code"]) for f in body["failed"]] == [("ugc", "image_timeout"), ("flat_lay", "storage_error")]
+
+
+def test_all_generations_failing_is_502_and_saves_nothing(client, engine, mocks):
     mocks.fail.update({p: higgsfield.HiggsfieldError("failed") for p in ("track", "beach", "city")})
 
     resp = client.post("/creative/generate", json=PAYLOAD)
 
     assert resp.status_code == 502
+    assert resp.json()["code"] == "image_provider_error"
     assert saved_assets(engine) == []
+
+
+def test_all_uploads_failing_is_502_but_keeps_paid_assets(client, engine, mocks):
+    mocks.upload_fail.update({p: storage.StorageError("Storage upload failed.") for p in ("track", "beach", "city")})
+
+    resp = client.post("/creative/generate", json=PAYLOAD)
+
+    assert resp.status_code == 502
+    assert resp.json()["code"] == "storage_error"
+    assets = saved_assets(engine)
+    assert len(assets) == 3 and all(a.file_url is None for a in assets)
+
+
+def test_all_timeouts_is_504(client, mocks):
+    mocks.fail.update({p: higgsfield.HiggsfieldTimeout("slow") for p in ("track", "beach", "city")})
+
+    resp = client.post("/creative/generate", json=PAYLOAD)
+
+    assert resp.status_code == 504
+    assert resp.json()["code"] == "image_timeout"
+
+
+def test_unexpected_error_is_500_after_saving_paid_assets(client, engine, mocks):
+    mocks.fail["beach"] = RuntimeError("bug")
+
+    resp = client.post("/creative/generate", json=PAYLOAD)
+
+    assert resp.status_code == 500
+    assert "bug" not in resp.text
+    assert sorted(a.format for a in saved_assets(engine)) == ["flat_lay", "ugc"]
 
 
 @pytest.mark.parametrize("change", [{"goal": "retention"}, {"platform": "youtube"}, {"brief": ""}])

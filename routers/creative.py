@@ -19,6 +19,17 @@ EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
 COST_PRECISION = Decimal("0.0001")  # Asset.cost_usd is Numeric(10, 4)
 
 
+def _failure(exc: Exception) -> tuple[str, str]:
+    """Code and caller-safe reason for one failed image (our own exception messages carry no secrets)."""
+    if isinstance(exc, higgsfield.HiggsfieldAuthError):
+        return "internal_error", "Something went wrong on our side."
+    if isinstance(exc, higgsfield.HiggsfieldTimeout):
+        return "image_timeout", str(exc)
+    if isinstance(exc, higgsfield.HiggsfieldError):
+        return "image_provider_error", str(exc)
+    return "storage_error", str(exc)
+
+
 def _render(item: creative.CreativeItem) -> tuple[higgsfield.GeneratedImage, str | None, Exception | None]:
     """Generate and upload one image. Raises if generation fails (nothing was charged);
     returns the upload error instead of raising, because the image is already paid for."""
@@ -42,11 +53,14 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
     with ThreadPoolExecutor(max_workers=creative.NUM_CREATIVES) as pool:
         futures = [pool.submit(_render, item) for item in plan.items]
     outcomes = []
+    unexpected = None
     for item, future in zip(plan.items, futures):
         try:
             outcomes.append((item, *future.result()))
         except Exception as exc:  # generation failed: not charged, nothing to save
             outcomes.append((item, None, None, exc))
+            if not isinstance(exc, higgsfield.HiggsfieldError):
+                unexpected = unexpected or exc  # a bug, not a provider failure: raise after saving paid work
 
     # Save every paid image (even one whose upload failed) so the daily cap sees the real spend.
     # Planning cost is split evenly across the assets we save.
@@ -76,13 +90,34 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
             session.refresh(asset)
         logger.info("Saved %s creative drafts: %s", len(assets), [a.id for a in assets])
 
-    errors = [o[3] for o in outcomes if o[3] is not None]
-    if errors:
-        # Mapped to 504 / 502 by core.errors; any paid images are already saved above.
-        logger.warning("Creative run had %s failed image(s) of %s", len(errors), len(outcomes))
-        raise errors[0]
+    if unexpected is not None:
+        raise unexpected
 
-    return {"assets": [_asset_out(asset) for asset in assets]}
+    # Every paid image is saved above; only one with a stored file counts as a usable draft.
+    saved = iter(assets)
+    drafts, failed = [], []
+    for item, image, url, error in outcomes:
+        asset = next(saved) if image is not None else None
+        if error is None:
+            drafts.append(asset)
+            continue
+        code, reason = _failure(error)
+        failed.append({
+            "format": item.format, "code": code, "reason": reason,
+            "asset_id": asset.id if asset is not None else None,
+        })
+
+    if failed:
+        logger.warning("Creative run: %s of %s image(s) failed: %s", len(failed), len(outcomes), failed)
+    if not drafts:
+        # Nothing usable: mapped to 504 / 502 by core.errors. Paid images are already saved.
+        raise next(o[3] for o in outcomes if o[3] is not None)
+
+    return {
+        "assets": [_asset_out(asset) for asset in drafts],
+        "failed_count": len(failed),
+        "failed": failed,
+    }
 
 
 def _asset_out(asset: Asset) -> dict:
