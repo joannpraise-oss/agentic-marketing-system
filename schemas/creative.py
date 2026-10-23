@@ -1,6 +1,6 @@
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Brand(BaseModel):
@@ -13,6 +13,7 @@ class Brand(BaseModel):
 
 MAX_ANGLES = 5
 MAX_ANGLE_CHARS = 60
+MAX_SOURCE_TEXT_CHARS = 2000
 
 OfferType = Literal["physical_product", "service", "content", "idea_test"]
 
@@ -23,6 +24,18 @@ class CreativeRequest(BaseModel):
     offer_type: OfferType = "physical_product"
     # One creative per angle, all for the same offer. Without angles the run makes 3 creatives.
     angles: Optional[list[str]] = Field(default=None, min_length=1, max_length=MAX_ANGLES)
+
+    # A snippet to quote (e.g. from a book or post); the caller must confirm they hold the rights.
+    source_text: Optional[str] = Field(default=None, max_length=MAX_SOURCE_TEXT_CHARS)
+    has_text_rights: bool = False
+
+    @model_validator(mode="after")
+    def source_text_needs_rights(self) -> "CreativeRequest":
+        if self.source_text is not None and not self.source_text.strip():
+            self.source_text = None
+        if self.source_text and not self.has_text_rights:
+            raise ValueError("source_text needs has_text_rights: true (confirm you have the rights to this text).")
+        return self
 
     @field_validator("angles")
     @classmethod

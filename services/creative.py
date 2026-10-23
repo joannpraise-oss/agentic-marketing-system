@@ -231,6 +231,15 @@ def _task_intro(request: CreativeRequest) -> str:
     )
 
 
+def _source_text_section(request: CreativeRequest) -> str:
+    if not request.source_text:
+        return ""
+    return (
+        "SOURCE TEXT (the brand confirmed it holds the rights; quote it word for word or not at all):\n"
+        f"\"\"\"\n{request.source_text}\n\"\"\"\n"
+    )
+
+
 def build_prompt(request: CreativeRequest, trend_notes: str) -> str:
     """Return the user message that turns a creative request into a CreativePlan.
 
@@ -289,7 +298,7 @@ CONTEXT:
 - Platform: {platform}
 {trends}
 {offer_type_guidance(request)}
-
+{_source_text_section(request)}
 ANALYZE (before choosing any image):
 1. What is this product, in one plain sentence a stranger would understand?
 2. What specific pain or desire does it solve for this audience, and what does
@@ -347,6 +356,11 @@ RULES:
   soon" news unless the brief states them.
 - Placeholders go only in the caption and FAQ, never in the image prompt or
   alt_text.
+- Keep brand-specific facts in the FAQ. Put a placeholder in the caption only
+  when that sentence cannot work without the fact; otherwise write the caption
+  without it and let the FAQ carry the detail.
+- Quote only from SOURCE TEXT, word for word. Never quote or paraphrase closely
+  from books, lyrics, articles or other people's text that is not given there.
 - No health or medical claims, and no performance results, unless the brief states them.
 """
 

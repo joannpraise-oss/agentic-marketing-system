@@ -359,3 +359,34 @@ def test_plan_creatives_spec_carries_angles(mock_planner):
 
     spec = mock_planner.calls[0]["context"]["spec"]
     assert spec.count == 2 and spec.angles == ("moms", "styling")
+
+
+
+# --- source text rights and placeholder placement ---
+
+def test_source_text_requires_rights_flag():
+    with pytest.raises(ValidationError, match="has_text_rights"):
+        CreativeRequest(brief="b", brand=BRAND, source_text="Chapter one began at dawn.")
+    ok = CreativeRequest(brief="b", brand=BRAND, source_text="Chapter one began at dawn.", has_text_rights=True)
+    assert ok.source_text == "Chapter one began at dawn."
+
+
+def test_blank_source_text_is_ignored_and_length_is_capped():
+    assert CreativeRequest(brief="b", brand=BRAND, source_text="   ").source_text is None
+    with pytest.raises(ValidationError):
+        CreativeRequest(brief="b", brand=BRAND, source_text="x" * 2001, has_text_rights=True)
+
+
+def test_build_prompt_includes_source_text_only_when_given():
+    request = REQUEST.model_copy(update={"source_text": "Dawn came slowly.", "has_text_rights": True})
+
+    assert "SOURCE TEXT" in creative.build_prompt(request, "")
+    assert "Dawn came slowly." in creative.build_prompt(request, "")
+    assert "SOURCE TEXT (" not in creative.build_prompt(REQUEST, "")
+
+
+def test_build_prompt_keeps_brand_facts_in_faq():
+    prompt = creative.build_prompt(REQUEST, "")
+
+    assert "Keep brand-specific facts in the FAQ" in prompt
+    assert "Quote only from SOURCE TEXT" in prompt

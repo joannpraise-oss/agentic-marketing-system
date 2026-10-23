@@ -275,3 +275,25 @@ def test_spend_check_scales_with_the_number_of_creatives(client, engine, mocks, 
     resp = client.post("/creative/generate", json={**PAYLOAD, "angles": angles})
 
     assert (resp.status_code == 402) == blocked
+
+
+
+def test_source_text_without_rights_is_400(client, mocks):
+    resp = client.post("/creative/generate", json={**PAYLOAD, "source_text": "A line from my book."})
+
+    assert resp.status_code == 400
+    assert "has_text_rights" in resp.text
+    assert mocks.planner_calls == []
+
+
+def test_rights_confirmation_saved_on_assets(client, engine, mocks):
+    body = {**PAYLOAD, "source_text": "A line from my book.", "has_text_rights": True}
+
+    assert client.post("/creative/generate", json=body).status_code == 200
+    assert [a.text_rights_confirmed for a in saved_assets(engine)] == [True] * 3
+
+
+def test_no_source_text_leaves_rights_unset(client, engine, mocks):
+    client.post("/creative/generate", json=PAYLOAD)
+
+    assert [a.text_rights_confirmed for a in saved_assets(engine)] == [None] * 3
