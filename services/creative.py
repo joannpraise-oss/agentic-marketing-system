@@ -121,7 +121,7 @@ def build_prompt(request: CreativeRequest, trend_notes: str) -> str:
 
     Must contain:
       - The campaign brief (request.brief), and every brand field: brand_name,
-        voice, colors, product, audience.
+        voice, colors, offer, audience.
       - request.goal (awareness / sales / launch) and request.platform
         (instagram / tiktok) when given; both are optional, so say what to do
         when they're None (e.g. "no specific goal", "platform-agnostic").
@@ -165,7 +165,7 @@ BRAND:
 - Name: {brand.brand_name}
 - Voice: {brand.voice}
 - Colors: {palette}
-- Product: {brand.product}
+- Offer: {brand.offer}
 - Audience: {brand.audience}
 
 CONTEXT:

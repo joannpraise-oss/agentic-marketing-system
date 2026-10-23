@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from schemas.creative import Brand, CreativeRequest
 from services import creative
 
-BRAND = Brand(brand_name="Acme", voice="playful", colors=["red"], product="sneakers", audience="runners")
+BRAND = Brand(brand_name="Acme", voice="playful", colors=["red"], offer="sneakers", audience="runners")
 REQUEST = CreativeRequest(brief="spring sale", brand=BRAND, goal="sales", platform="tiktok")
 
 

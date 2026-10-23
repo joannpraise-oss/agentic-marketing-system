@@ -14,7 +14,7 @@ PAYLOAD = {
     "brief": "Spring sale on trail runners",
     "brand": {
         "brand_name": "Acme", "voice": "playful", "colors": ["red", "white"],
-        "product": "trail running shoes", "audience": "weekend runners",
+        "offer": "trail running shoes", "audience": "weekend runners",
     },
     "goal": "sales",
     "platform": "instagram",
