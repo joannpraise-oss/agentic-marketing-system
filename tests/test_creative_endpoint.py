@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 from db.models import Asset
 from services import creative, higgsfield, storage
 from tests.test_asset_model import make_asset
-from tests.test_creative import make_plan
+from tests.test_creative import make_item, make_plan
 
 PAYLOAD = {
     "brief": "Spring sale on trail runners",
@@ -26,14 +26,16 @@ def mocks(monkeypatch):
     """OpenAI, Higgsfield and storage all faked. Set `fail` / `upload_fail` to a prompt -> exception."""
     state = SimpleNamespace(
         planner_calls=[], generated=[], uploads=[], fail={}, upload_fail={},
-        active_uploads=0, max_parallel_uploads=0,
+        active_uploads=0, max_parallel_uploads=0, plan=None,
     )
 
     def create_with_completion(**kwargs):
         state.planner_calls.append(kwargs)
         # 3000 in / 1000 out tokens = 0.00045 + 0.0006 = $0.00105 planning cost
         usage = SimpleNamespace(prompt_tokens=3000, completion_tokens=1000, total_tokens=4000)
-        return make_plan(), SimpleNamespace(usage=usage)
+        # Validate like Instructor does, with the request's spec as context.
+        plan = state.plan or make_plan()
+        return creative.CreativePlan.model_validate(plan.model_dump(), context=kwargs["context"]), SimpleNamespace(usage=usage)
 
     def generate_image(prompt):
         key = prompt.split()[-1]  # make_item prompts end with a short key: "track", "beach", "city"
@@ -229,3 +231,47 @@ def test_invalid_request_is_400(client, mocks, change):
     assert resp.status_code == 400
     assert resp.json()["code"] == "invalid_input"
     assert mocks.planner_calls == []
+
+
+# --- angles ---
+
+ANGLES = ["moms", "braids and locs care", "styling", "gym bag", "gifting"]
+
+
+def angle_plan(angles, formats=None):
+    formats = formats or ["lifestyle"] * len(angles)
+    items = [make_item(f"a{i}", fmt) for i, fmt in enumerate(formats)]
+    for item, angle in zip(items, angles):
+        item["angle"] = angle
+    return creative.CreativePlan.model_construct(items=[creative.CreativeItem(**i) for i in items])
+
+
+def test_one_creative_per_angle_and_angle_saved(client, engine, mocks):
+    mocks.plan = angle_plan(ANGLES[:2])
+
+    resp = client.post("/creative/generate", json={**PAYLOAD, "angles": ANGLES[:2]})
+
+    assert resp.status_code == 200, resp.text
+    assert [a["angle"] for a in resp.json()["assets"]] == ANGLES[:2]
+    assert [a.angle for a in saved_assets(engine)] == ANGLES[:2]
+    assert len(mocks.generated) == 2
+    assert "1. moms" in mocks.planner_calls[0]["messages"][0]["content"]
+
+
+def test_without_angles_assets_have_no_angle(client, engine, mocks):
+    client.post("/creative/generate", json=PAYLOAD)
+
+    assert [a.angle for a in saved_assets(engine)] == [None, None, None]
+
+
+@pytest.mark.parametrize("angles, blocked", [(None, False), (ANGLES, True)])
+def test_spend_check_scales_with_the_number_of_creatives(client, engine, mocks, angles, blocked):
+    with Session(engine) as session:
+        session.add(make_asset(cost_usd=Decimal("4.965")))
+        session.commit()
+    mocks.plan = angle_plan(angles) if angles else None
+
+    # 3 creatives: 4.965 + 3 x 0.006 + 0.01 = 4.993 (ok); 5 angles: 4.965 + 0.03 + 0.01 = 5.005 (over)
+    resp = client.post("/creative/generate", json={**PAYLOAD, "angles": angles})
+
+    assert (resp.status_code == 402) == blocked

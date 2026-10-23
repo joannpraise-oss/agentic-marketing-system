@@ -43,13 +43,14 @@ def _upload(image: higgsfield.GeneratedImage) -> tuple[str | None, Exception | N
 def generate_creatives(data: CreativeRequest, session: Session = Depends(get_session)):
     image_cost = higgsfield.estimate_cost()
     # Nothing is spent before this check: planning is covered by a reserve, images by the estimate.
-    check_spend_caps(session, image_cost * creative.NUM_CREATIVES + creative.PLANNING_RESERVE_USD)
+    count = creative.creative_count(data)
+    check_spend_caps(session, image_cost * count + creative.PLANNING_RESERVE_USD)
 
     plan, planning_cost = creative.plan_creatives(data)
 
     # Generate in parallel (each job waits on Higgsfield), then upload one at a time:
     # parallel uploads were the suspect for intermittent ReadErrors from Supabase Storage.
-    with ThreadPoolExecutor(max_workers=creative.NUM_CREATIVES) as pool:
+    with ThreadPoolExecutor(max_workers=count) as pool:
         futures = [pool.submit(higgsfield.generate_image, item.prompt) for item in plan.items]
     outcomes = []
     unexpected = None
@@ -85,6 +86,7 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
             faq=[faq.model_dump() for faq in item.faq],
             format=item.format,
             offer_type=data.offer_type,
+            angle=item.angle,
             status="draft",
             cost_usd=(image_cost + planning_share).quantize(COST_PRECISION, rounding=ROUND_HALF_UP),
         )

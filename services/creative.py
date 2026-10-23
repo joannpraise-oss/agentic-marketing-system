@@ -94,6 +94,7 @@ class CreativeItem(BaseModel):
     caption: str = Field(description="Ad caption in the brand voice.")
     alt_text: str = Field(description="Literal description of the image for screen readers.")
     faq: list[FAQ] = Field(min_length=2, max_length=2)
+    angle: str | None = Field(default=None, description="The requested angle this creative is for, copied exactly.")
     needs_input: list[str] = Field(
         default_factory=list,
         description="Every [▢ ...] placeholder used in the caption or FAQ, copied exactly.",
@@ -123,10 +124,16 @@ class PlanSpec:
     """What a valid plan must look like for one request; passed to validation as context."""
     count: int = NUM_CREATIVES
     offer_type: str = "physical_product"
+    angles: tuple[str, ...] | None = None
 
     @classmethod
     def from_request(cls, request: CreativeRequest) -> "PlanSpec":
-        return cls(offer_type=request.offer_type)
+        angles = tuple(request.angles) if request.angles else None
+        return cls(count=creative_count(request), offer_type=request.offer_type, angles=angles)
+
+
+def creative_count(request: CreativeRequest) -> int:
+    return len(request.angles) if request.angles else NUM_CREATIVES
 
 
 class CreativePlan(BaseModel):
@@ -142,8 +149,18 @@ class CreativePlan(BaseModel):
         prompts = {item.prompt.strip().lower() for item in items}
         if len(prompts) != len(items):
             raise ValueError("Each creative needs a distinct image prompt.")
-        if len({item.format for item in items}) != len(items):
-            raise ValueError("Each creative must use a different format.")
+        if spec.angles:
+            # One creative per angle, in order; formats may repeat because the angles differ.
+            got = [(item.angle or "").strip().casefold() for item in items]
+            if got != [a.casefold() for a in spec.angles]:
+                raise ValueError(f"Return one creative per angle, in this order: {list(spec.angles)}.")
+            for item, angle in zip(items, spec.angles):
+                item.angle = angle
+        else:
+            if len({item.format for item in items}) != len(items):
+                raise ValueError("Each creative must use a different format.")
+            for item in items:
+                item.angle = None
         allowed = FORMATS_BY_OFFER_TYPE[spec.offer_type]
         for item in items:
             if item.format not in allowed:
@@ -197,6 +214,20 @@ def _format_menu(offer_type: str) -> str:
     return "\n".join(
         f"- {fmt}: {FORMAT_DESCRIPTIONS[fmt]}\n  (prompt starts with \"{FORMAT_OPENERS[fmt]}\")"
         for fmt in FORMATS_BY_OFFER_TYPE[offer_type]
+    )
+
+
+def _task_intro(request: CreativeRequest) -> str:
+    if not request.angles:
+        return (
+            f"Create exactly {NUM_CREATIVES} ad concepts, each in a DIFFERENT format chosen to fit this\n"
+            "brand, goal and platform:"
+        )
+    angles = "\n".join(f"{i}. {angle}" for i, angle in enumerate(request.angles, 1))
+    return (
+        f"Create exactly {len(request.angles)} ad concepts for the same offer, one per angle below, in this\n"
+        "order. Each concept speaks to its angle's audience or use. Pick the best format for each\n"
+        f"angle; formats may repeat across angles.\nANGLES:\n{angles}\n\nFormats:"
     )
 
 
@@ -267,12 +298,12 @@ ANALYZE (before choosing any image):
    need to see to trust it enough to buy?
 
 TASK:
-Create exactly 3 ad concepts, each in a DIFFERENT format chosen to fit this
-brand, goal and platform:
+{_task_intro(request)}
 {_format_menu(request.offer_type)}
 
 For each concept:
-- format: one of the formats above, no repeats
+- format: one of the formats above{"" if request.angles else ", no repeats"}
+- angle: {"the angle this concept is for, copied exactly" if request.angles else "leave empty"}
 - rationale: one sentence on why this format suits this brand and buyer
 - prompt: a self-contained image prompt covering subject, setting, lighting,
   composition, style and the brand colors. It MUST start with its format's

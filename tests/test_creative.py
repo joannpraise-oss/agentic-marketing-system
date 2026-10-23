@@ -293,3 +293,69 @@ def test_offer_type_guidance_is_a_stub_for_now():
 
     with pytest.raises(NotImplementedError):
         REAL_OFFER_TYPE_GUIDANCE(REQUEST)
+
+
+
+# --- angles ---
+
+def test_angles_are_optional_trimmed_distinct_and_capped():
+    assert CreativeRequest(brief="b", brand=BRAND).angles is None
+    assert CreativeRequest(brief="b", brand=BRAND, angles=[" moms ", "styling"]).angles == ["moms", "styling"]
+    for bad in ([], ["a", "b", "c", "d", "e", "f"], ["moms", "Moms"], ["  "], ["x" * 61]):
+        with pytest.raises(ValidationError):
+            CreativeRequest(brief="b", brand=BRAND, angles=bad)
+
+
+def test_creative_count_follows_angles():
+    assert creative.creative_count(REQUEST) == 3
+    assert creative.creative_count(REQUEST.model_copy(update={"angles": ["moms", "styling"]})) == 2
+
+
+def angle_items(angles, formats):
+    items = [make_item(f"s{i}", fmt) for i, fmt in enumerate(formats)]
+    for item, angle in zip(items, angles):
+        item["angle"] = angle
+    return items
+
+
+def test_angle_plan_allows_repeated_formats_and_normalises_angles():
+    spec = creative.PlanSpec(count=2, angles=("moms", "braids and locs care"))
+    items = angle_items(["Moms ", "braids and locs care"], ["lifestyle", "lifestyle"])
+
+    plan = creative.CreativePlan.model_validate({"items": items}, context={"spec": spec})
+
+    assert [i.angle for i in plan.items] == ["moms", "braids and locs care"]
+
+
+@pytest.mark.parametrize("angles", [["styling", "moms"], ["moms", None], ["moms", "gifting"]])
+def test_angle_plan_must_match_requested_angles_in_order(angles):
+    spec = creative.PlanSpec(count=2, angles=("moms", "styling"))
+    with pytest.raises(ValidationError, match="one creative per angle"):
+        creative.CreativePlan.model_validate(
+            {"items": angle_items(angles, ["ugc", "lifestyle"])}, context={"spec": spec}
+        )
+
+
+def test_plan_without_angles_drops_any_angle_the_model_invents():
+    plan = creative.CreativePlan.model_validate(
+        {"items": angle_items(["x", "y", "z"], ["ugc", "lifestyle", "flat_lay"])}
+    )
+    assert [i.angle for i in plan.items] == [None, None, None]
+
+
+def test_build_prompt_lists_angles_in_order():
+    request = REQUEST.model_copy(update={"angles": ["moms", "styling"]})
+
+    prompt = creative.build_prompt(request, "")
+
+    assert "Create exactly 2 ad concepts for the same offer" in prompt
+    assert "1. moms\n2. styling" in prompt
+    assert "formats may repeat" in prompt
+    assert "Create exactly 3" in creative.build_prompt(REQUEST, "")
+
+
+def test_plan_creatives_spec_carries_angles(mock_planner):
+    creative.plan_creatives(REQUEST.model_copy(update={"angles": ["moms", "styling"]}))
+
+    spec = mock_planner.calls[0]["context"]["spec"]
+    assert spec.count == 2 and spec.angles == ("moms", "styling")
