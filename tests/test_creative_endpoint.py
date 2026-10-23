@@ -84,6 +84,7 @@ def test_generate_saves_three_drafts_with_format_and_real_cost(client, engine, m
         assert asset.provider == "higgsfield"
         assert asset.model == higgsfield.MODEL
         assert len(asset.faq) == 2
+        assert asset.offer_type == "physical_product"
         # $0.006 image + $0.00105 / 3 planning = $0.00635, rounded to 4 places
         assert asset.cost_usd == Decimal("0.0064")
     assert sorted(mocks.generated) == ["beach", "city", "track"]

@@ -204,11 +204,15 @@ def test_flat_lay_framing_allowed_for_flat_lay_and_overhead_lighting_allowed_any
     creative.CreativeItem(**studio)
 
 
-def test_build_prompt_tells_the_model_each_opener():
-    prompt = creative.build_prompt(REQUEST, "notes")
+@pytest.mark.parametrize("offer_type", list(creative.FORMATS_BY_OFFER_TYPE))
+def test_build_prompt_lists_only_the_formats_for_the_offer_type(offer_type):
+    prompt = creative.build_prompt(REQUEST.model_copy(update={"offer_type": offer_type}), "notes")
 
-    for opener in creative.FORMAT_OPENERS.values():
-        assert f'starts with "{opener}"' in prompt
+    allowed = creative.FORMATS_BY_OFFER_TYPE[offer_type]
+    for fmt, opener in creative.FORMAT_OPENERS.items():
+        listed = f"- {fmt}: " in prompt and f'starts with "{opener}"' in prompt
+        assert listed == (fmt in allowed), fmt
+    assert f"Offer type: {offer_type}" in prompt
 
 
 def test_build_prompt_says_placeholders_replace_the_whole_claim():
@@ -225,3 +229,67 @@ def test_build_prompt_forbids_hints_about_future_products():
     prompt = creative.build_prompt(REQUEST, "notes")
 
     assert "Do not hint at future products, releases" in prompt
+
+
+
+# --- offer types ---
+
+def plan_for(formats, offer_type="physical_product", count=None):
+    items = [make_item(f"subject{i}", fmt) for i, fmt in enumerate(formats)]
+    spec = creative.PlanSpec(count=count or len(formats), offer_type=offer_type)
+    return creative.CreativePlan.model_validate({"items": items}, context={"spec": spec})
+
+
+def test_every_format_has_an_opener_and_a_description():
+    formats = set(creative.CreativeFormat.__args__)
+    assert set(creative.FORMAT_OPENERS) == formats == set(creative.FORMAT_DESCRIPTIONS)
+    for offer_type, allowed in creative.FORMATS_BY_OFFER_TYPE.items():
+        assert set(allowed) <= formats
+        assert len(allowed) >= creative.NUM_CREATIVES, offer_type  # 3 distinct formats must be possible
+
+
+def test_request_offer_type_defaults_to_physical_product_and_is_validated():
+    assert CreativeRequest(brief="b", brand=BRAND).offer_type == "physical_product"
+    with pytest.raises(ValidationError):
+        CreativeRequest(brief="b", brand=BRAND, offer_type="subscription")
+
+
+@pytest.mark.parametrize("offer_type, formats", [
+    ("physical_product", ["ugc", "studio_hero", "flat_lay"]),
+    ("service", ["before_after", "experience", "problem_solution"]),
+    ("content", ["mood_scene", "narrator", "lifestyle"]),
+    ("idea_test", ["concept", "problem_solution", "ugc"]),
+])
+def test_plan_accepts_formats_allowed_for_the_offer_type(offer_type, formats):
+    assert len(plan_for(formats, offer_type).items) == 3
+
+
+@pytest.mark.parametrize("offer_type, bad_format", [
+    ("service", "flat_lay"),          # a service has no product to lay out
+    ("content", "studio_hero"),
+    ("idea_test", "model_with_product"),
+    ("physical_product", "narrator"),
+])
+def test_plan_rejects_formats_that_do_not_fit_the_offer_type(offer_type, bad_format):
+    allowed = [f for f in creative.FORMATS_BY_OFFER_TYPE[offer_type] if f != bad_format][:2]
+    with pytest.raises(ValidationError, match=f"{bad_format} does not fit a {offer_type} offer"):
+        plan_for([*allowed, bad_format], offer_type)
+
+
+def test_plan_count_comes_from_the_spec():
+    with pytest.raises(ValidationError, match="exactly 3 creatives"):
+        plan_for(["ugc", "studio_hero"], count=3)
+
+
+def test_plan_creatives_validates_with_the_request_spec(mock_planner):
+    creative.plan_creatives(REQUEST.model_copy(update={"offer_type": "service"}))
+
+    spec = mock_planner.calls[0]["context"]["spec"]
+    assert spec == creative.PlanSpec(count=3, offer_type="service")
+
+
+def test_offer_type_guidance_is_a_stub_for_now():
+    from tests.conftest import REAL_OFFER_TYPE_GUIDANCE
+
+    with pytest.raises(NotImplementedError):
+        REAL_OFFER_TYPE_GUIDANCE(REQUEST)

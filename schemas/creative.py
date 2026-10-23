@@ -11,8 +11,12 @@ class Brand(BaseModel):
     audience: str = Field(min_length=1)
 
 
+OfferType = Literal["physical_product", "service", "content", "idea_test"]
+
+
 class CreativeRequest(BaseModel):
     brief: str = Field(min_length=1)
     brand: Brand
+    offer_type: OfferType = "physical_product"
     goal: Optional[Literal["awareness", "sales", "launch"]] = None
     platform: Optional[Literal["instagram", "tiktok"]] = None

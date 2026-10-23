@@ -84,6 +84,7 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
             alt_text=item.alt_text,
             faq=[faq.model_dump() for faq in item.faq],
             format=item.format,
+            offer_type=data.offer_type,
             status="draft",
             cost_usd=(image_cost + planning_share).quantize(COST_PRECISION, rounding=ROUND_HALF_UP),
         )

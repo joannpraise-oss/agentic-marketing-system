@@ -1,5 +1,6 @@
 import logging
 import os
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
@@ -8,7 +9,7 @@ import instructor
 from dotenv import load_dotenv
 from langsmith import wrappers
 from openai import OpenAI
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, model_validator
 
 from core.placeholders import asset_texts, find_placeholders
 from schemas.creative import CreativeRequest
@@ -29,7 +30,8 @@ NUM_CREATIVES = 3
 TREND_NOTES_PATH = Path(__file__).resolve().parent.parent / "config" / "trend_notes.md"
 
 CreativeFormat = Literal[
-    "ugc", "model_with_product", "lifestyle", "studio_hero", "flat_lay", "problem_solution", "seasonal"
+    "ugc", "model_with_product", "lifestyle", "studio_hero", "flat_lay", "problem_solution", "seasonal",
+    "before_after", "experience", "mood_scene", "narrator", "concept",
 ]
 
 # Every image prompt must open with its format's framing, so the label and the picture agree.
@@ -41,6 +43,36 @@ FORMAT_OPENERS: dict[str, str] = {
     "flat_lay": "Top-down flat lay",
     "problem_solution": "Problem-solution photo",
     "seasonal": "Seasonal photo",
+    "before_after": "Before-and-after photo",
+    "experience": "Experience photo",
+    "mood_scene": "Atmospheric mood scene",
+    "narrator": "Photo of a fictional narrator",
+    "concept": "Concept visual",
+}
+# What each format shows; build_prompt lists these for the formats the offer type allows.
+FORMAT_DESCRIPTIONS: dict[str, str] = {
+    "ugc": "phone-camera feel, a fictional person using the offer at home",
+    "model_with_product": "a fictional model wearing, holding or applying it",
+    "lifestyle": "the offer in a styled real-world setting",
+    "studio_hero": "clean background, the product as the star",
+    "flat_lay": "product and props arranged top-down",
+    "problem_solution": "shows the pain point and the offer solving it",
+    "seasonal": "tied to a holiday, gifting or a timely moment",
+    "before_after": "the same fictional subject before and after, side by side",
+    "experience": "the moment of receiving the service (e.g. in the chair) and how it feels",
+    "mood_scene": "an atmospheric scene that carries the content's mood",
+    "narrator": "a fictional narrator or host figure presenting the content",
+    "concept": "a visual metaphor or concept illustration for one angle of the idea",
+}
+# Visuals must fit the offer: products show the product, services the result and experience,
+# content a mood or a narrator, idea tests a concept per angle.
+FORMATS_BY_OFFER_TYPE: dict[str, tuple[str, ...]] = {
+    "physical_product": (
+        "ugc", "model_with_product", "lifestyle", "studio_hero", "flat_lay", "problem_solution", "seasonal",
+    ),
+    "service": ("before_after", "experience", "problem_solution", "ugc", "lifestyle", "seasonal"),
+    "content": ("mood_scene", "narrator", "lifestyle", "seasonal"),
+    "idea_test": ("concept", "problem_solution", "lifestyle", "ugc"),
 }
 # Overhead framing is what makes a flat lay; it isn't allowed under any other label.
 # ("overhead" alone is left out: "overhead lighting" is common in normal prompts.)
@@ -86,19 +118,39 @@ class CreativeItem(BaseModel):
         return self
 
 
-class CreativePlan(BaseModel):
-    items: list[CreativeItem] = Field(min_length=NUM_CREATIVES, max_length=NUM_CREATIVES)
+@dataclass(frozen=True)
+class PlanSpec:
+    """What a valid plan must look like for one request; passed to validation as context."""
+    count: int = NUM_CREATIVES
+    offer_type: str = "physical_product"
 
-    @field_validator("items")
     @classmethod
-    def prompts_are_distinct(cls, items: list[CreativeItem]) -> list[CreativeItem]:
+    def from_request(cls, request: CreativeRequest) -> "PlanSpec":
+        return cls(offer_type=request.offer_type)
+
+
+class CreativePlan(BaseModel):
+    items: list[CreativeItem] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def matches_spec(self, info: ValidationInfo) -> "CreativePlan":
         # A validation error here makes Instructor re-ask the model.
+        spec = (info.context or {}).get("spec") or PlanSpec()
+        items = self.items
+        if len(items) != spec.count:
+            raise ValueError(f"Return exactly {spec.count} creatives, not {len(items)}.")
         prompts = {item.prompt.strip().lower() for item in items}
         if len(prompts) != len(items):
             raise ValueError("Each creative needs a distinct image prompt.")
         if len({item.format for item in items}) != len(items):
             raise ValueError("Each creative must use a different format.")
-        return items
+        allowed = FORMATS_BY_OFFER_TYPE[spec.offer_type]
+        for item in items:
+            if item.format not in allowed:
+                raise ValueError(
+                    f"{item.format} does not fit a {spec.offer_type} offer. Use one of: {', '.join(allowed)}."
+                )
+        return self
 
 
 def load_trend_notes() -> str:
@@ -114,6 +166,38 @@ def planning_cost(prompt_tokens: int, completion_tokens: int) -> Decimal:
     return (
         Decimal(prompt_tokens) * INPUT_USD_PER_MTOK + Decimal(completion_tokens) * OUTPUT_USD_PER_MTOK
     ) / Decimal(1_000_000)
+
+
+def offer_type_guidance(request: CreativeRequest) -> str:
+    """Return the OFFER TYPE section of the planner prompt for request.offer_type.
+
+    Must contain:
+      - Which offer type this is, in plain words, and what the ad is selling.
+      - What the visuals must show for that type:
+          physical_product - the product itself, recognisable, in use or on display.
+          service          - the result and the experience, not a product: the
+                             before -> after, the moment in the chair.
+          content          - mood scenes, a narrator, or a quote-card style image
+                             (text added via on_image_text, not invented in the image).
+          idea_test        - a concept visual per angle, testing the idea rather
+                             than claiming a finished product exists.
+      - What to avoid for that type (e.g. no fake product shots for a service,
+        no implying an idea_test offer is already for sale).
+      - The formats allowed for the type are listed separately by build_prompt
+        (FORMATS_BY_OFFER_TYPE), so describe intent, not the format list.
+
+    Hint: a dict keyed by offer type with a few lines each, returned under an
+    "OFFER TYPE:" heading, keeps this readable. request.brand.offer is the
+    thing being promoted, whatever the type.
+    """
+    raise NotImplementedError("offer_type_guidance is yours to write")
+
+
+def _format_menu(offer_type: str) -> str:
+    return "\n".join(
+        f"- {fmt}: {FORMAT_DESCRIPTIONS[fmt]}\n  (prompt starts with \"{FORMAT_OPENERS[fmt]}\")"
+        for fmt in FORMATS_BY_OFFER_TYPE[offer_type]
+    )
 
 
 def build_prompt(request: CreativeRequest, trend_notes: str) -> str:
@@ -169,9 +253,12 @@ BRAND:
 - Audience: {brand.audience}
 
 CONTEXT:
+- Offer type: {request.offer_type}
 - Goal: {goal}
 - Platform: {platform}
 {trends}
+{offer_type_guidance(request)}
+
 ANALYZE (before choosing any image):
 1. What is this product, in one plain sentence a stranger would understand?
 2. What specific pain or desire does it solve for this audience, and what does
@@ -182,20 +269,7 @@ ANALYZE (before choosing any image):
 TASK:
 Create exactly 3 ad concepts, each in a DIFFERENT format chosen to fit this
 brand, goal and platform:
-- ugc: phone-camera feel, a fictional person using the product at home
-  (prompt starts with "{FORMAT_OPENERS['ugc']}")
-- model_with_product: a fictional model wearing, holding or applying it
-  (prompt starts with "{FORMAT_OPENERS['model_with_product']}")
-- lifestyle: the product in a styled real-world setting
-  (prompt starts with "{FORMAT_OPENERS['lifestyle']}")
-- studio_hero: clean background, the product as the star
-  (prompt starts with "{FORMAT_OPENERS['studio_hero']}")
-- flat_lay: product and props arranged top-down
-  (prompt starts with "{FORMAT_OPENERS['flat_lay']}")
-- problem_solution: shows the pain point and the product solving it
-  (prompt starts with "{FORMAT_OPENERS['problem_solution']}")
-- seasonal: tied to a holiday, gifting or a timely moment
-  (prompt starts with "{FORMAT_OPENERS['seasonal']}")
+{_format_menu(request.offer_type)}
 
 For each concept:
 - format: one of the formats above, no repeats
@@ -252,6 +326,7 @@ def plan_creatives(request: CreativeRequest) -> tuple[CreativePlan, Decimal]:
         model=PLANNING_MODEL,
         response_model=CreativePlan,
         messages=[{"role": "user", "content": build_prompt(request, load_trend_notes())}],
+        context={"spec": PlanSpec.from_request(request)},
         max_tokens=2000,
         max_retries=2,
     )
