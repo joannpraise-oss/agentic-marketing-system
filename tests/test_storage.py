@@ -15,17 +15,27 @@ def supabase_env(monkeypatch):
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", KEY)
 
 
-def mock_post(monkeypatch, status=200, raises=None, **response_kwargs):
+def mock_post(monkeypatch, status=200, raises=None, outcomes=None, **response_kwargs):
+    """Fake httpx.post. `outcomes` scripts successive attempts: an int status or an exception."""
     calls = []
+    script = list(outcomes) if outcomes is not None else None
 
     def fake_post(url, **kwargs):
         calls.append((url, kwargs))
-        if raises:
-            raise raises
-        return httpx.Response(status, request=httpx.Request("POST", url), **response_kwargs)
+        outcome = script.pop(0) if script else (raises or status)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return httpx.Response(outcome, request=httpx.Request("POST", url), **response_kwargs)
 
     monkeypatch.setattr(storage.httpx, "post", fake_post)
     return calls
+
+
+@pytest.fixture(autouse=True)
+def no_real_sleep(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(storage.time, "sleep", sleeps.append)
+    return sleeps
 
 
 def test_upload_returns_public_url_and_sends_auth(monkeypatch):
@@ -98,7 +108,7 @@ def test_http_error_with_non_json_body_still_logs_status(monkeypatch, caplog):
     with caplog.at_level(logging.DEBUG), pytest.raises(storage.StorageError):
         storage.upload_asset(b"x", "image/png")
 
-    assert "502: no error message" in caplog.text
+    assert "status 502 (attempt 1/3): no error message" in caplog.text
     assert "<html>" not in caplog.text
 
 
@@ -135,3 +145,54 @@ def test_network_error_raises_storage_error(monkeypatch):
     mock_post(monkeypatch, raises=httpx.ConnectError("boom"))
     with pytest.raises(storage.StorageError):
         storage.upload_asset(b"x", "image/png")
+
+
+# --- retries ---
+
+def test_network_error_then_success_retries_and_returns_url(monkeypatch, no_real_sleep):
+    calls = mock_post(monkeypatch, outcomes=[httpx.ConnectError("reset"), 200])
+
+    url = storage.upload_asset(b"x", "image/png", "png")
+
+    assert len(calls) == 2
+    assert calls[0][0] == calls[1][0]  # same path, so a lost-response retry overwrites, not duplicates
+    assert calls[0][1]["headers"]["x-upsert"] == "true"
+    assert url.endswith(".png")
+    assert no_real_sleep == [storage.RETRY_DELAYS_SECONDS[0]]
+
+
+def test_5xx_retried_up_to_two_times_then_fails(monkeypatch, no_real_sleep):
+    calls = mock_post(monkeypatch, outcomes=[503, 502, 500])
+
+    with pytest.raises(storage.StorageError, match="status 500"):
+        storage.upload_asset(b"x", "image/png")
+
+    assert len(calls) == 3
+    assert no_real_sleep == list(storage.RETRY_DELAYS_SECONDS)
+
+
+def test_5xx_then_success(monkeypatch):
+    calls = mock_post(monkeypatch, outcomes=[500, 500, 200])
+
+    assert storage.upload_asset(b"x", "image/png")
+    assert len(calls) == 3
+
+
+def test_repeated_network_errors_give_up_after_three_attempts(monkeypatch):
+    calls = mock_post(monkeypatch, raises=httpx.ReadTimeout("slow"))
+
+    with pytest.raises(storage.StorageError, match="network error"):
+        storage.upload_asset(b"x", "image/png")
+
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 409])
+def test_4xx_is_not_retried(monkeypatch, no_real_sleep, status):
+    calls = mock_post(monkeypatch, outcomes=[status, 200])
+
+    with pytest.raises(storage.StorageError, match=f"status {status}"):
+        storage.upload_asset(b"x", "image/png")
+
+    assert len(calls) == 1
+    assert no_real_sleep == []

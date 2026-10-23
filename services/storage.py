@@ -1,6 +1,8 @@
 import logging
 import os
+import time
 import uuid
+from typing import Callable
 
 import httpx
 
@@ -10,6 +12,8 @@ BUCKET = "assets"
 TIMEOUT_SECONDS = 30
 LEGACY_JWT_PREFIX = "eyJ"  # legacy service_role keys are JWTs; new keys look like sb_secret_...
 MAX_LOGGED_ERROR_CHARS = 300
+# Wait before each retry; retries happen only on network errors and 5xx, never on 4xx.
+RETRY_DELAYS_SECONDS = (0.5, 1.5)
 
 
 class StorageError(Exception):
@@ -55,25 +59,37 @@ def _error_message(response: httpx.Response, key: str) -> str:
     return ": ".join(parts).replace(key, "[redacted]")[:MAX_LOGGED_ERROR_CHARS]
 
 
-def upload_asset(data: bytes, content_type: str, extension: str = "") -> str:
+def upload_asset(
+    data: bytes, content_type: str, extension: str = "", *, sleep: Callable[[float], None] | None = None
+) -> str:
     """Upload bytes to the public `assets` bucket and return the public URL."""
+    sleep = sleep or time.sleep
     base_url, key = _config()
     path = f"{uuid.uuid4().hex}{'.' + extension.lstrip('.') if extension else ''}"
-    try:
-        response = httpx.post(
-            f"{base_url}/storage/v1/object/{BUCKET}/{path}",
-            content=data,
-            headers={**_auth_headers(key), "Content-Type": content_type},
-            timeout=TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        logger.error(
-            "Storage upload rejected with status %s: %s",
-            exc.response.status_code, _error_message(exc.response, key) or "no error message",
-        )
-        raise StorageError(f"Storage upload failed with status {exc.response.status_code}.") from None
-    except httpx.HTTPError as exc:
-        logger.error("Storage upload failed: %s", type(exc).__name__)
-        raise StorageError("Storage upload failed.") from None
-    return f"{base_url}/storage/v1/object/public/{BUCKET}/{path}"
+    # x-upsert: if an attempt landed but its response was lost, the retry overwrites the
+    # same (random, unique) path instead of failing as a duplicate.
+    headers = {**_auth_headers(key), "Content-Type": content_type, "x-upsert": "true"}
+    attempts = len(RETRY_DELAYS_SECONDS) + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            response = httpx.post(
+                f"{base_url}/storage/v1/object/{BUCKET}/{path}",
+                content=data, headers=headers, timeout=TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            return f"{base_url}/storage/v1/object/public/{BUCKET}/{path}"
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            logger.error(
+                "Storage upload rejected with status %s (attempt %s/%s): %s",
+                status, attempt, attempts, _error_message(exc.response, key) or "no error message",
+            )
+            error = StorageError(f"Storage upload failed with status {status}.")
+            if status < 500:
+                raise error from None
+        except httpx.HTTPError as exc:
+            logger.error("Storage upload failed (attempt %s/%s): %s", attempt, attempts, type(exc).__name__)
+            error = StorageError(f"Storage upload failed: network error ({type(exc).__name__}).")
+        if attempt < attempts:
+            sleep(RETRY_DELAYS_SECONDS[attempt - 1])
+    raise error
