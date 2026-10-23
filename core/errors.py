@@ -10,6 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from core.placeholders import PlaceholdersRemainError
 from services.higgsfield import HiggsfieldAuthError, HiggsfieldError, HiggsfieldTimeout
+from services.product_photo import ProductPhotoError
 from services.storage import StorageError
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,10 @@ def register_error_handlers(app: FastAPI) -> None:
             else "The daily spend limit has been reached. Please try again tomorrow."
         )
         return error_response(request, 402, "spend_cap_reached", message, scope=exc.scope)
+
+    @app.exception_handler(ProductPhotoError)
+    async def invalid_product_photo(request: Request, exc: ProductPhotoError):
+        return error_response(request, 400, "invalid_product_photo", str(exc))
 
     @app.exception_handler(PlaceholdersRemainError)
     async def placeholders_remain(request: Request, exc: PlaceholdersRemainError):

@@ -8,7 +8,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-BUCKET = "assets"
+BUCKET = "assets"  # public: generated creatives
+PRODUCT_PHOTO_BUCKET = "product-photos"  # private: customer uploads, shared only via signed URLs
+SIGNED_URL_SECONDS = 600
 TIMEOUT_SECONDS = 60
 # Supabase recommends standard (single-request) uploads only up to 6 MB; above that, resumable (TUS).
 STANDARD_UPLOAD_MAX_BYTES = 6 * 1024 * 1024
@@ -65,34 +67,75 @@ def upload_asset(
     data: bytes, content_type: str, extension: str = "", *, sleep: Callable[[float], None] | None = None
 ) -> str:
     """Upload bytes to the public `assets` bucket and return the public URL."""
+    base_url, _ = _config()
+    path = f"{uuid.uuid4().hex}{'.' + extension.lstrip('.') if extension else ''}"
+    _upload(BUCKET, path, data, content_type, sleep=sleep)
+    return f"{base_url}/storage/v1/object/public/{BUCKET}/{path}"
+
+
+def upload_product_photo(data: bytes, *, sleep: Callable[[float], None] | None = None) -> str:
+    """Upload a prepared JPEG to the private product-photos bucket; returns its path in the bucket."""
+    path = f"{uuid.uuid4().hex}.jpg"
+    _upload(PRODUCT_PHOTO_BUCKET, path, data, "image/jpeg", sleep=sleep)
+    return path
+
+
+def create_signed_url(bucket: str, path: str, expires_in: int = SIGNED_URL_SECONDS) -> str:
+    """A short-lived URL for a private object. The URL carries a token: never log it."""
+    base_url, key = _config()
+    try:
+        response = httpx.post(
+            f"{base_url}/storage/v1/object/sign/{bucket}/{path}",
+            json={"expiresIn": expires_in}, headers=_auth_headers(key), timeout=TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        signed = response.json()["signedURL"]
+    except httpx.HTTPStatusError as exc:
+        logger.error(
+            "Signing %s/%s rejected with status %s: %s", bucket, path, exc.response.status_code,
+            _error_message(exc.response, key) or "no error message",
+        )
+        raise StorageError(f"Could not sign the file URL (status {exc.response.status_code}).") from None
+    except httpx.HTTPError as exc:
+        logger.error("Signing %s/%s failed: %s", bucket, path, type(exc).__name__)
+        raise StorageError("Could not sign the file URL: network error.") from None
+    except (ValueError, KeyError, TypeError):
+        raise StorageError("Storage returned no signed URL.") from None
+    # Supabase returns a path relative to /storage/v1, e.g. "/object/sign/<bucket>/<path>?token=...".
+    return f"{base_url}/storage/v1{signed}"
+
+
+def _upload(
+    bucket: str, path: str, data: bytes, content_type: str, *, sleep: Callable[[float], None] | None = None
+) -> None:
     sleep = sleep or time.sleep
     base_url, key = _config()
-    path = f"{uuid.uuid4().hex}{'.' + extension.lstrip('.') if extension else ''}"
+    target = f"{bucket}/{path}"
     # x-upsert: if an attempt landed but its response was lost, the retry overwrites the
     # same (random, unique) path instead of failing as a duplicate.
     headers = {**_auth_headers(key), "Content-Type": content_type, "x-upsert": "true"}
     size_kb = len(data) / 1024
     if len(data) > STANDARD_UPLOAD_MAX_BYTES:
-        logger.warning("Upload of %s is %.1f KB, over Supabase's 6 MB standard-upload guidance", path, size_kb)
+        logger.warning("Upload of %s is %.1f KB, over Supabase's 6 MB standard-upload guidance", target, size_kb)
     attempts = len(RETRY_DELAYS_SECONDS) + 1
     for attempt in range(1, attempts + 1):
         started = time.monotonic()
         try:
             response = httpx.post(
-                f"{base_url}/storage/v1/object/{BUCKET}/{path}",
+                f"{base_url}/storage/v1/object/{bucket}/{path}",
                 content=data, headers=headers, timeout=TIMEOUT_SECONDS,
             )
             response.raise_for_status()
             logger.info(
                 "Uploaded %s (%.1f KB) in %.2fs (attempt %s/%s)",
-                path, size_kb, time.monotonic() - started, attempt, attempts,
+                target, size_kb, time.monotonic() - started, attempt, attempts,
             )
-            return f"{base_url}/storage/v1/object/public/{BUCKET}/{path}"
+            return
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             logger.error(
                 "Storage upload of %s (%.1f KB) rejected with status %s after %.2fs (attempt %s/%s): %s",
-                path, size_kb, status, time.monotonic() - started, attempt, attempts,
+                target, size_kb, status, time.monotonic() - started, attempt, attempts,
                 _error_message(exc.response, key) or "no error message",
             )
             error = StorageError(f"Storage upload failed with status {status}.")
@@ -101,7 +144,7 @@ def upload_asset(
         except httpx.HTTPError as exc:
             logger.error(
                 "Storage upload of %s (%.1f KB) failed after %.2fs (attempt %s/%s): %s",
-                path, size_kb, time.monotonic() - started, attempt, attempts, type(exc).__name__,
+                target, size_kb, time.monotonic() - started, attempt, attempts, type(exc).__name__,
             )
             error = StorageError(f"Storage upload failed: network error ({type(exc).__name__}).")
         if attempt < attempts:

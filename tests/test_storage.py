@@ -207,7 +207,7 @@ def test_success_logs_size_in_kb_and_duration(monkeypatch, caplog):
     with caplog.at_level(logging.INFO):
         storage.upload_asset(b"x" * 2048, "image/png", "png")
 
-    assert re.search(r"Uploaded \w+\.png \(2\.0 KB\) in [\d.]+s \(attempt 1/3\)", caplog.text)
+    assert re.search(r"Uploaded assets/\w+\.png \(2\.0 KB\) in [\d.]+s \(attempt 1/3\)", caplog.text)
 
 
 def test_each_failed_attempt_logs_size_and_duration(monkeypatch, caplog):
@@ -237,3 +237,55 @@ def test_upload_timeout_is_60s(monkeypatch):
     storage.upload_asset(b"x", "image/png")
 
     assert calls[0][1]["timeout"] == 60
+
+
+# --- private product photos and signed URLs ---
+
+def test_product_photo_goes_to_the_private_bucket(monkeypatch):
+    calls = mock_post(monkeypatch)
+
+    path = storage.upload_product_photo(b"jpeg-bytes")
+
+    url, kwargs = calls[0]
+    assert url == f"https://proj.supabase.co/storage/v1/object/product-photos/{path}"
+    assert path.endswith(".jpg")
+    assert kwargs["headers"]["Content-Type"] == "image/jpeg"
+    assert kwargs["headers"]["apikey"] == KEY
+
+
+def test_signed_url_lasts_ten_minutes_and_is_absolute(monkeypatch, caplog):
+    calls = []
+    token_path = "/object/sign/product-photos/abc.jpg?token=SECRET-TOKEN"
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return httpx.Response(200, json={"signedURL": token_path}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(storage.httpx, "post", fake_post)
+
+    with caplog.at_level(logging.DEBUG):
+        url = storage.create_signed_url("product-photos", "abc.jpg")
+
+    assert calls[0][0] == "https://proj.supabase.co/storage/v1/object/sign/product-photos/abc.jpg"
+    assert calls[0][1]["json"] == {"expiresIn": 600}
+    assert url == f"https://proj.supabase.co/storage/v1{token_path}"
+    assert "SECRET-TOKEN" not in caplog.text
+
+
+@pytest.mark.parametrize("outcome, message", [
+    (404, "status 404"),
+    (httpx.ConnectError("down"), "network error"),
+    ("no-field", "no signed URL"),
+])
+def test_signed_url_failures_raise_storage_error(monkeypatch, outcome, message):
+    def fake_post(url, **kwargs):
+        if isinstance(outcome, Exception):
+            raise outcome
+        if outcome == "no-field":
+            return httpx.Response(200, json={}, request=httpx.Request("POST", url))
+        return httpx.Response(outcome, json={"error": "not_found"}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(storage.httpx, "post", fake_post)
+
+    with pytest.raises(storage.StorageError, match=message):
+        storage.create_signed_url("product-photos", "abc.jpg")

@@ -2,7 +2,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from decimal import ROUND_HALF_UP, Decimal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, UploadFile
 from sqlmodel import Session
 
 from core.placeholders import asset_texts, find_placeholders
@@ -10,7 +10,7 @@ from core.spend import check_spend_caps
 from db.database import get_session
 from db.models import Asset
 from schemas.creative import CreativeRequest
-from services import creative, higgsfield, storage
+from services import creative, higgsfield, product_photo, storage
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -137,4 +137,22 @@ def _asset_out(asset: Asset) -> dict:
     return {
         **asset.model_dump(mode="json"),
         "needs_input": find_placeholders(asset_texts(asset.caption, asset.alt_text, asset.faq)),
+    }
+
+
+# Plain `def`: reading the upload, Pillow and the storage call all block.
+@router.post("/creative/product-photo")
+def upload_product_photo(file: UploadFile = File(...)):
+    """Check and store a product photo in the private bucket; returns its path for /creative/generate."""
+    data = file.file.read(product_photo.MAX_BYTES)  # stop reading at the limit
+    if len(data) >= product_photo.MAX_BYTES:
+        raise product_photo.ProductPhotoError("The photo must be under 10 MB.")
+    photo = product_photo.prepare_product_photo(data)
+    path = storage.upload_product_photo(photo.data)
+    logger.info("Stored product photo %s (%sx%s, %.1f KB)", path, photo.width, photo.height, len(photo.data) / 1024)
+    return {
+        "product_photo_path": path,
+        "width": photo.width,
+        "height": photo.height,
+        "size_kb": round(len(photo.data) / 1024, 1),
     }
