@@ -49,6 +49,9 @@ class Asset(SQLModel, table=True):
     offer_type: Optional[str] = Field(default=None)  # physical_product | service | content | idea_test
     angle: Optional[str] = Field(default=None)  # the requested angle this creative was made for
     text_rights_confirmed: Optional[bool] = Field(default=None)  # set when the request quoted source_text
+    text_choice: Optional[str] = Field(default=None)  # own | suggest | none
+    text_mode: Optional[str] = Field(default=None)  # overlay | rendered (None when there is no text)
+    on_image_text: Optional[str] = Field(default=None)
     status: str = Field(default="draft")  # "draft" | "approved" | "archived"
     cost_usd: Decimal = Field(default=Decimal("0"), sa_column=Column(Numeric(10, 4), nullable=False))
     created_at: datetime = Field(default_factory=utcnow)

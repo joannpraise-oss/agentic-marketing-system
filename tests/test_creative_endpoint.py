@@ -297,3 +297,32 @@ def test_no_source_text_leaves_rights_unset(client, engine, mocks):
     client.post("/creative/generate", json=PAYLOAD)
 
     assert [a.text_rights_confirmed for a in saved_assets(engine)] == [None] * 3
+
+
+def test_text_settings_saved_on_assets(client, engine, mocks):
+    plan = make_plan()
+    for item in plan.items:
+        item.prompt += ", clean negative space in the top third"
+    mocks.plan = plan
+
+    body = {**PAYLOAD, "text_choice": "own", "on_image_text": "Trails are calling"}
+    resp = client.post("/creative/generate", json=body)
+
+    assert resp.status_code == 200, resp.text
+    assets = saved_assets(engine)
+    assert [(a.text_choice, a.text_mode, a.on_image_text) for a in assets] == [("own", "overlay", "Trails are calling")] * 3
+
+
+def test_no_text_saves_choice_none_and_no_mode(client, engine, mocks):
+    client.post("/creative/generate", json=PAYLOAD)
+
+    assert [(a.text_choice, a.text_mode, a.on_image_text) for a in saved_assets(engine)] == [("none", None, None)] * 3
+
+
+def test_bad_on_image_text_is_400_before_any_spend(client, mocks):
+    body = {**PAYLOAD, "text_choice": "own", "on_image_text": "one two three four five six", "text_mode": "rendered"}
+
+    resp = client.post("/creative/generate", json=body)
+
+    assert resp.status_code == 400
+    assert mocks.planner_calls == []

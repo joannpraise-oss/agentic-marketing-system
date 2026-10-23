@@ -18,3 +18,18 @@ download from there and upload again.
   `file_url` NULL: download, `storage.upload_asset`, set `file_url`.
 - Higgsfield keeps outputs for at least 7 days, then may delete them, so retries
   must happen within that window. After that, the asset can only be regenerated.
+
+## Verify rendered on-image text
+
+**Problem:** with `text_mode: "rendered"` the image model draws `on_image_text`
+into the image, and image models misspell. Nothing checks the result yet.
+
+**Idea:** after each rendered image is generated, read the text back (a vision
+model or OCR), compare it with `on_image_text` (case- and whitespace-
+insensitive), and flag mismatches so the asset can't be approved as-is.
+
+- Needs a place to store the result, e.g. a nullable `rendered_text_ok BOOLEAN`
+  (and maybe `rendered_text_read VARCHAR`) on `asset`. That's a schema change:
+  ask before running it against Supabase.
+- The read-back call costs money: include it in the spend estimate.
+- A mismatch could block approval the same way placeholders do.

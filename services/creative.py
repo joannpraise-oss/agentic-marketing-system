@@ -12,7 +12,13 @@ from openai import OpenAI
 from pydantic import BaseModel, Field, ValidationInfo, model_validator
 
 from core.placeholders import asset_texts, find_placeholders
-from schemas.creative import CreativeRequest
+from schemas.creative import (
+    DEFAULT_CREATIVE_COUNT,
+    MAX_ON_IMAGE_WORDS,
+    MAX_RENDERED_WORDS,
+    CreativeRequest,
+    on_image_text_problem,
+)
 
 load_dotenv()
 
@@ -26,7 +32,7 @@ INPUT_USD_PER_MTOK = Decimal("0.15")
 OUTPUT_USD_PER_MTOK = Decimal("0.60")
 # Planning cost is only known afterwards; this reserve goes into the pre-run spend check.
 PLANNING_RESERVE_USD = Decimal("0.01")
-NUM_CREATIVES = 3
+NUM_CREATIVES = DEFAULT_CREATIVE_COUNT
 TREND_NOTES_PATH = Path(__file__).resolve().parent.parent / "config" / "trend_notes.md"
 
 CreativeFormat = Literal[
@@ -95,6 +101,7 @@ class CreativeItem(BaseModel):
     alt_text: str = Field(description="Literal description of the image for screen readers.")
     faq: list[FAQ] = Field(min_length=2, max_length=2)
     angle: str | None = Field(default=None, description="The requested angle this creative is for, copied exactly.")
+    on_image_text: str | None = Field(default=None, description="Words shown on the image, if text is used.")
     needs_input: list[str] = Field(
         default_factory=list,
         description="Every [▢ ...] placeholder used in the caption or FAQ, copied exactly.",
@@ -107,6 +114,8 @@ class CreativeItem(BaseModel):
             raise ValueError("The image prompt must not contain [▢ ...] placeholders.")
         if find_placeholders([self.alt_text]):
             raise ValueError("alt_text must describe the image and not contain [▢ ...] placeholders.")
+        if find_placeholders([self.on_image_text]):
+            raise ValueError("on_image_text must not contain [▢ ...] placeholders.")
         opener = FORMAT_OPENERS[self.format]
         if not self.prompt.strip().lower().startswith(opener.lower()):
             raise ValueError(f'A {self.format} prompt must start with "{opener}".')
@@ -125,15 +134,52 @@ class PlanSpec:
     count: int = NUM_CREATIVES
     offer_type: str = "physical_product"
     angles: tuple[str, ...] | None = None
+    text_choice: str = "none"
+    text_mode: str = "overlay"
+    own_texts: tuple[str, ...] | None = None
 
     @classmethod
     def from_request(cls, request: CreativeRequest) -> "PlanSpec":
         angles = tuple(request.angles) if request.angles else None
-        return cls(count=creative_count(request), offer_type=request.offer_type, angles=angles)
+        own = request.own_texts()
+        return cls(
+            count=request.creative_count(), offer_type=request.offer_type, angles=angles,
+            text_choice=request.text_choice, text_mode=request.text_mode,
+            own_texts=tuple(own) if own else None,
+        )
 
 
 def creative_count(request: CreativeRequest) -> int:
-    return len(request.angles) if request.angles else NUM_CREATIVES
+    return request.creative_count()
+
+
+def _check_on_image_text(item: "CreativeItem", spec: PlanSpec, index: int) -> None:
+    """Fill or validate item.on_image_text for the request's text choice and mode."""
+    if spec.text_choice == "none":
+        item.on_image_text = None
+        return
+    if spec.text_choice == "own":
+        item.on_image_text = spec.own_texts[index]  # the caller's words, never the model's
+    elif not item.on_image_text or not item.on_image_text.strip():
+        raise ValueError(f"Creative {index + 1} needs on_image_text (text_choice is 'suggest').")
+    else:
+        item.on_image_text = item.on_image_text.strip()
+        problem = on_image_text_problem(item.on_image_text, spec.text_mode)
+        if problem:
+            raise ValueError(f"Creative {index + 1}: {problem}")
+    quoted = f'"{item.on_image_text}"'
+    if spec.text_mode == "rendered":
+        if quoted not in item.prompt:
+            raise ValueError(f"Creative {index + 1}: a rendered-text prompt must contain the exact text {quoted}.")
+    else:
+        if "negative space" not in item.prompt.lower():
+            raise ValueError(
+                f"Creative {index + 1}: an overlay prompt must leave clean negative space for the text (say where)."
+            )
+        if quoted.lower() in item.prompt.lower():
+            raise ValueError(
+                f"Creative {index + 1}: overlay text is added later; keep {quoted} out of the image prompt."
+            )
 
 
 class CreativePlan(BaseModel):
@@ -167,6 +213,8 @@ class CreativePlan(BaseModel):
                 raise ValueError(
                     f"{item.format} does not fit a {spec.offer_type} offer. Use one of: {', '.join(allowed)}."
                 )
+        for index, item in enumerate(items):
+            _check_on_image_text(item, spec, index)
         return self
 
 
@@ -240,6 +288,34 @@ def _source_text_section(request: CreativeRequest) -> str:
     )
 
 
+def _on_image_text_section(request: CreativeRequest) -> str:
+    if request.text_choice == "none":
+        return "ON-IMAGE TEXT: none. Leave on_image_text empty; the image carries no words.\n"
+    limit = MAX_RENDERED_WORDS if request.text_mode == "rendered" else MAX_ON_IMAGE_WORDS
+    if request.text_choice == "own":
+        texts = request.own_texts()
+        lines = "\n".join(f"{i}. \"{t}\"" for i, t in enumerate(texts, 1))
+        source = f"The brand's own words, one per creative in order (do not change them):\n{lines}"
+    else:
+        source = (
+            f"Write on_image_text for each creative to fit its angle and format: at most {limit} words,\n"
+            "in the brand voice, no placeholders, and no claim the caption could not make."
+        )
+    if request.text_mode == "rendered":
+        mode = (
+            "Mode: RENDERED. The image model draws the text. Put the exact on_image_text in double\n"
+            "quotes inside the image prompt, with where and how it appears (e.g. bold white sans-serif\n"
+            "across the top third). It will be read back after generation and flagged if it differs."
+        )
+    else:
+        mode = (
+            "Mode: OVERLAY. The text is added later as an editable layer. Do NOT put it in the image\n"
+            "prompt; instead compose the image with clean negative space for it and say where\n"
+            "(e.g. \"clean negative space in the top third\")."
+        )
+    return f"ON-IMAGE TEXT:\n{source}\n{mode}\n"
+
+
 def build_prompt(request: CreativeRequest, trend_notes: str) -> str:
     """Return the user message that turns a creative request into a CreativePlan.
 
@@ -298,7 +374,7 @@ CONTEXT:
 - Platform: {platform}
 {trends}
 {offer_type_guidance(request)}
-{_source_text_section(request)}
+{_source_text_section(request)}{_on_image_text_section(request)}
 ANALYZE (before choosing any image):
 1. What is this product, in one plain sentence a stranger would understand?
 2. What specific pain or desire does it solve for this audience, and what does
@@ -322,6 +398,7 @@ For each concept:
 - alt_text: a literal description of what the image shows, not marketing copy
 - faq: exactly 2 questions a shopper in this audience would ask, with answers
 - needs_input: every [▢ ...] placeholder used in the caption or FAQ, copied exactly
+- on_image_text: {"leave empty" if request.text_choice == "none" else "the words on the image, as set out under ON-IMAGE TEXT"}
 
 CHECK (every concept must pass all three, or revise it):
 - Clarity: would a buyer understand what is being sold within 2 seconds?
@@ -331,7 +408,9 @@ CHECK (every concept must pass all three, or revise it):
 
 RULES:
 - Square 1:1 composition.
-- No text, words, logos or watermarks rendered inside the image.
+- No logos or watermarks in the image. No words in the image, except the exact
+  on_image_text when ON-IMAGE TEXT says RENDERED.
+- No placeholders in on_image_text, ever.
 - People must be fictional. Never depict a real or recognizable person.
 - Captions must not read as a real customer testimonial (no names, no "I've
   used this for 3 weeks"). Speak as the brand.

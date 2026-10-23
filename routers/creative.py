@@ -88,6 +88,9 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
             offer_type=data.offer_type,
             angle=item.angle,
             text_rights_confirmed=True if data.source_text else None,
+            text_choice=data.text_choice,
+            text_mode=data.text_mode if data.text_choice != "none" else None,
+            on_image_text=item.on_image_text,
             status="draft",
             cost_usd=(image_cost + planning_share).quantize(COST_PRECISION, rounding=ROUND_HALF_UP),
         )

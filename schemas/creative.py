@@ -1,6 +1,8 @@
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from core.placeholders import find_placeholders
 
 
 class Brand(BaseModel):
@@ -11,31 +13,48 @@ class Brand(BaseModel):
     audience: str = Field(min_length=1)
 
 
+DEFAULT_CREATIVE_COUNT = 3
 MAX_ANGLES = 5
 MAX_ANGLE_CHARS = 60
 MAX_SOURCE_TEXT_CHARS = 2000
+MAX_ON_IMAGE_WORDS = 12
+MAX_RENDERED_WORDS = 5  # image models only spell short text reliably
 
 OfferType = Literal["physical_product", "service", "content", "idea_test"]
+TextChoice = Literal["own", "suggest", "none"]
+TextMode = Literal["overlay", "rendered"]
+
+
+def on_image_text_problem(text: str, text_mode: str) -> Optional[str]:
+    """Why this on-image text is not allowed, or None if it is."""
+    limit = MAX_RENDERED_WORDS if text_mode == "rendered" else MAX_ON_IMAGE_WORDS
+    if not text.strip():
+        return "on_image_text must not be empty."
+    if len(text.split()) > limit:
+        return f"on_image_text must be at most {limit} words in {text_mode} mode: {text!r}."
+    if find_placeholders([text]):
+        return f"on_image_text must not contain [▢ ...] placeholders: {text!r}."
+    return None
 
 
 class CreativeRequest(BaseModel):
     brief: str = Field(min_length=1)
     brand: Brand
     offer_type: OfferType = "physical_product"
+    goal: Optional[Literal["awareness", "sales", "launch"]] = None
+    platform: Optional[Literal["instagram", "tiktok"]] = None
     # One creative per angle, all for the same offer. Without angles the run makes 3 creatives.
     angles: Optional[list[str]] = Field(default=None, min_length=1, max_length=MAX_ANGLES)
-
     # A snippet to quote (e.g. from a book or post); the caller must confirm they hold the rights.
     source_text: Optional[str] = Field(default=None, max_length=MAX_SOURCE_TEXT_CHARS)
     has_text_rights: bool = False
-
-    @model_validator(mode="after")
-    def source_text_needs_rights(self) -> "CreativeRequest":
-        if self.source_text is not None and not self.source_text.strip():
-            self.source_text = None
-        if self.source_text and not self.has_text_rights:
-            raise ValueError("source_text needs has_text_rights: true (confirm you have the rights to this text).")
-        return self
+    # Text on the image: the caller's own words, the planner's suggestion, or none.
+    text_choice: TextChoice = "none"
+    # For "own": one line for every creative, or a list with one line per creative.
+    on_image_text: Optional[Union[str, list[str]]] = None
+    # overlay: the image leaves clean negative space and the text is added later (editable, free).
+    # rendered: the model draws the text into the image (short text only; checked after generation).
+    text_mode: TextMode = "overlay"
 
     @field_validator("angles")
     @classmethod
@@ -48,5 +67,40 @@ class CreativeRequest(BaseModel):
         if len({a.casefold() for a in cleaned}) != len(cleaned):
             raise ValueError("Angles must be distinct.")
         return cleaned
-    goal: Optional[Literal["awareness", "sales", "launch"]] = None
-    platform: Optional[Literal["instagram", "tiktok"]] = None
+
+    @model_validator(mode="after")
+    def source_text_needs_rights(self) -> "CreativeRequest":
+        if self.source_text is not None and not self.source_text.strip():
+            self.source_text = None
+        if self.source_text and not self.has_text_rights:
+            raise ValueError("source_text needs has_text_rights: true (confirm you have the rights to this text).")
+        return self
+
+    @model_validator(mode="after")
+    def on_image_text_matches_choice(self) -> "CreativeRequest":
+        if self.text_choice != "own":
+            if self.on_image_text is not None:
+                raise ValueError("on_image_text is only sent with text_choice 'own'.")
+            return self
+        if self.on_image_text is None:
+            raise ValueError("text_choice 'own' needs on_image_text: one line, or one per creative.")
+        if isinstance(self.on_image_text, list) and len(self.on_image_text) != self.creative_count():
+            raise ValueError(
+                f"on_image_text has {len(self.on_image_text)} lines but the run makes {self.creative_count()} creatives."
+            )
+        for text in self.own_texts():
+            problem = on_image_text_problem(text, self.text_mode)
+            if problem:
+                raise ValueError(problem)
+        return self
+
+    def creative_count(self) -> int:
+        return len(self.angles) if self.angles else DEFAULT_CREATIVE_COUNT
+
+    def own_texts(self) -> Optional[list[str]]:
+        """The caller's on-image text, one line per creative, or None."""
+        if self.text_choice != "own" or self.on_image_text is None:
+            return None
+        if isinstance(self.on_image_text, str):
+            return [self.on_image_text.strip()] * self.creative_count()
+        return [t.strip() for t in self.on_image_text]

@@ -390,3 +390,129 @@ def test_build_prompt_keeps_brand_facts_in_faq():
 
     assert "Keep brand-specific facts in the FAQ" in prompt
     assert "Quote only from SOURCE TEXT" in prompt
+
+
+# --- on-image text ---
+
+def text_request(**fields):
+    return CreativeRequest(brief="b", brand=BRAND, **fields)
+
+
+def test_text_defaults_to_none_and_overlay():
+    request = text_request()
+    assert (request.text_choice, request.text_mode, request.on_image_text) == ("none", "overlay", None)
+
+
+def test_own_text_one_line_for_all_or_one_per_creative():
+    assert text_request(text_choice="own", on_image_text=" Run further ").own_texts() == ["Run further"] * 3
+    per = text_request(text_choice="own", on_image_text=["A", "B"], angles=["moms", "styling"])
+    assert per.own_texts() == ["A", "B"]
+
+
+@pytest.mark.parametrize("fields, message", [
+    ({"text_choice": "own"}, "needs on_image_text"),
+    ({"text_choice": "own", "on_image_text": ["A", "B"]}, "2 lines but the run makes 3"),
+    ({"text_choice": "own", "on_image_text": " ".join(["word"] * 13)}, "at most 12 words"),
+    ({"text_choice": "own", "on_image_text": "one two three four five six", "text_mode": "rendered"}, "at most 5 words"),
+    ({"text_choice": "own", "on_image_text": "Free returns [▢ policy, e.g. 30 days]"}, "placeholders"),
+    ({"text_choice": "suggest", "on_image_text": "Mine"}, "only sent with text_choice 'own'"),
+    ({"on_image_text": "Mine"}, "only sent with text_choice 'own'"),
+])
+def test_on_image_text_request_rules(fields, message):
+    with pytest.raises(ValidationError, match=message):
+        text_request(**fields)
+
+
+def text_plan(items_fields, **spec_fields):
+    formats = ["ugc", "lifestyle", "flat_lay"]
+    items = [make_item(f"s{i}", fmt) for i, fmt in enumerate(formats)]
+    for item, fields in zip(items, items_fields):
+        item.update(fields)
+    spec = creative.PlanSpec(**spec_fields)
+    return creative.CreativePlan.model_validate({"items": items}, context={"spec": spec})
+
+
+OVERLAY = "Candid smartphone photo of a runner, clean negative space in the top third"
+
+
+def test_none_drops_any_text_the_model_adds():
+    plan = text_plan([{"on_image_text": "Buy now"}] * 3)
+    assert [i.on_image_text for i in plan.items] == [None] * 3
+
+
+def test_own_text_overrides_the_model_and_overlay_needs_negative_space():
+    fields = [{"prompt": OVERLAY, "on_image_text": "model words"},
+              {"prompt": "Eye-level lifestyle photo, negative space on the left"},
+              {"prompt": "Top-down flat lay, clean negative space at the bottom"}]
+    plan = text_plan(fields, text_choice="own", own_texts=("Run further",) * 3)
+
+    assert [i.on_image_text for i in plan.items] == ["Run further"] * 3
+
+
+def test_overlay_prompt_without_negative_space_is_rejected():
+    with pytest.raises(ValidationError, match="negative space"):
+        text_plan([], text_choice="own", own_texts=("Run",) * 3)
+
+
+def test_overlay_text_must_stay_out_of_the_image_prompt():
+    fields = [{"prompt": f'{OVERLAY}, with the words "Run further"'}]
+    with pytest.raises(ValidationError, match="keep \"Run further\" out of the image prompt"):
+        text_plan(fields, text_choice="own", own_texts=("Run further",) * 3)
+
+
+def test_overlay_allows_the_word_inside_normal_prose():
+    # "calm" as text and "calm morning light" in the scene is fine; only the quoted text is banned.
+    fields = [{"prompt": "Candid smartphone photo, calm morning light, negative space on top"},
+              {"prompt": "Eye-level lifestyle photo, negative space on the left"},
+              {"prompt": "Top-down flat lay, negative space at the bottom"}]
+    text_plan(fields, text_choice="own", own_texts=("Calm",) * 3)
+
+
+def test_rendered_prompt_must_contain_the_exact_quoted_text():
+    openers = ["Candid smartphone photo", "Eye-level lifestyle photo", "Top-down flat lay"]
+    good = [{"prompt": f'{opener}, bold white text "Run {word}" across the top'}
+            for opener, word in zip(openers, ("far", "fast", "free"))]
+    plan = text_plan(good, text_choice="own", text_mode="rendered", own_texts=("Run far", "Run fast", "Run free"))
+    assert [i.on_image_text for i in plan.items] == ["Run far", "Run fast", "Run free"]
+
+    with pytest.raises(ValidationError, match='must contain the exact text "Run far"'):
+        text_plan([{"prompt": "Candid smartphone photo, text RUN FAR on top"}],
+                  text_choice="own", text_mode="rendered", own_texts=("Run far", "Run fast", "Run free"))
+
+
+@pytest.mark.parametrize("text, message", [
+    (None, "needs on_image_text"),
+    (" ".join(["w"] * 13), "at most 12 words"),
+    ("Returns: [▢ policy, e.g. free 30-day returns]", "placeholders"),
+])
+def test_suggested_text_is_required_short_and_placeholder_free(text, message):
+    fields = [{"prompt": OVERLAY, "on_image_text": text}]
+    with pytest.raises(ValidationError, match=message):
+        text_plan(fields, text_choice="suggest")
+
+
+def test_suggested_text_accepted():
+    fields = [{"prompt": OVERLAY, "on_image_text": "Trails don't wait"},
+              {"prompt": "Eye-level lifestyle photo, negative space on the left", "on_image_text": "Grip that holds"},
+              {"prompt": "Top-down flat lay, negative space at the bottom", "on_image_text": "Pack light"}]
+    plan = text_plan(fields, text_choice="suggest")
+    assert plan.items[0].on_image_text == "Trails don't wait"
+
+
+@pytest.mark.parametrize("fields, expected", [
+    ({}, "ON-IMAGE TEXT: none"),
+    ({"text_choice": "suggest"}, "Mode: OVERLAY"),
+    ({"text_choice": "suggest", "text_mode": "rendered"}, "Mode: RENDERED"),
+    ({"text_choice": "own", "on_image_text": "Run further"}, '1. "Run further"'),
+])
+def test_build_prompt_text_section(fields, expected):
+    prompt = creative.build_prompt(REQUEST.model_copy(update=fields), "")
+    assert expected in prompt
+    assert "No words in the image, except the exact" in prompt
+    assert "No placeholders in on_image_text" in prompt
+
+
+def test_spec_from_request_carries_text_settings():
+    request = text_request(text_choice="own", on_image_text="Go", text_mode="rendered")
+    spec = creative.PlanSpec.from_request(request)
+    assert (spec.text_choice, spec.text_mode, spec.own_texts) == ("own", "rendered", ("Go", "Go", "Go"))
