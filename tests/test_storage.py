@@ -1,4 +1,5 @@
 import logging
+import re
 
 import httpx
 import pytest
@@ -108,7 +109,7 @@ def test_http_error_with_non_json_body_still_logs_status(monkeypatch, caplog):
     with caplog.at_level(logging.DEBUG), pytest.raises(storage.StorageError):
         storage.upload_asset(b"x", "image/png")
 
-    assert "status 502 (attempt 1/3): no error message" in caplog.text
+    assert re.search(r"status 502 after [\d.]+s \(attempt 1/3\): no error message", caplog.text)
     assert "<html>" not in caplog.text
 
 
@@ -196,3 +197,43 @@ def test_4xx_is_not_retried(monkeypatch, no_real_sleep, status):
 
     assert len(calls) == 1
     assert no_real_sleep == []
+
+
+# --- upload diagnostics ---
+
+def test_success_logs_size_in_kb_and_duration(monkeypatch, caplog):
+    mock_post(monkeypatch)
+
+    with caplog.at_level(logging.INFO):
+        storage.upload_asset(b"x" * 2048, "image/png", "png")
+
+    assert re.search(r"Uploaded \w+\.png \(2\.0 KB\) in [\d.]+s \(attempt 1/3\)", caplog.text)
+
+
+def test_each_failed_attempt_logs_size_and_duration(monkeypatch, caplog):
+    mock_post(monkeypatch, outcomes=[httpx.ReadError("reset"), httpx.ReadError("reset"), 200])
+
+    with caplog.at_level(logging.INFO):
+        storage.upload_asset(b"x" * 1536, "image/png")
+
+    failures = re.findall(r"\(1\.5 KB\) failed after [\d.]+s \(attempt (\d)/3\): ReadError", caplog.text)
+    assert failures == ["1", "2"]
+    assert "attempt 3/3" in caplog.text
+
+
+def test_files_over_6mb_log_a_warning(monkeypatch, caplog):
+    mock_post(monkeypatch)
+    monkeypatch.setattr(storage, "STANDARD_UPLOAD_MAX_BYTES", 1024)
+
+    with caplog.at_level(logging.INFO):
+        storage.upload_asset(b"x" * 2048, "image/png")
+
+    assert "over Supabase's 6 MB standard-upload guidance" in caplog.text
+
+
+def test_upload_timeout_is_60s(monkeypatch):
+    calls = mock_post(monkeypatch)
+
+    storage.upload_asset(b"x", "image/png")
+
+    assert calls[0][1]["timeout"] == 60

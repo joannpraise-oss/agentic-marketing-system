@@ -9,7 +9,9 @@ import httpx
 logger = logging.getLogger(__name__)
 
 BUCKET = "assets"
-TIMEOUT_SECONDS = 30
+TIMEOUT_SECONDS = 60
+# Supabase recommends standard (single-request) uploads only up to 6 MB; above that, resumable (TUS).
+STANDARD_UPLOAD_MAX_BYTES = 6 * 1024 * 1024
 LEGACY_JWT_PREFIX = "eyJ"  # legacy service_role keys are JWTs; new keys look like sb_secret_...
 MAX_LOGGED_ERROR_CHARS = 300
 # Wait before each retry; retries happen only on network errors and 5xx, never on 4xx.
@@ -69,26 +71,38 @@ def upload_asset(
     # x-upsert: if an attempt landed but its response was lost, the retry overwrites the
     # same (random, unique) path instead of failing as a duplicate.
     headers = {**_auth_headers(key), "Content-Type": content_type, "x-upsert": "true"}
+    size_kb = len(data) / 1024
+    if len(data) > STANDARD_UPLOAD_MAX_BYTES:
+        logger.warning("Upload of %s is %.1f KB, over Supabase's 6 MB standard-upload guidance", path, size_kb)
     attempts = len(RETRY_DELAYS_SECONDS) + 1
     for attempt in range(1, attempts + 1):
+        started = time.monotonic()
         try:
             response = httpx.post(
                 f"{base_url}/storage/v1/object/{BUCKET}/{path}",
                 content=data, headers=headers, timeout=TIMEOUT_SECONDS,
             )
             response.raise_for_status()
+            logger.info(
+                "Uploaded %s (%.1f KB) in %.2fs (attempt %s/%s)",
+                path, size_kb, time.monotonic() - started, attempt, attempts,
+            )
             return f"{base_url}/storage/v1/object/public/{BUCKET}/{path}"
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             logger.error(
-                "Storage upload rejected with status %s (attempt %s/%s): %s",
-                status, attempt, attempts, _error_message(exc.response, key) or "no error message",
+                "Storage upload of %s (%.1f KB) rejected with status %s after %.2fs (attempt %s/%s): %s",
+                path, size_kb, status, time.monotonic() - started, attempt, attempts,
+                _error_message(exc.response, key) or "no error message",
             )
             error = StorageError(f"Storage upload failed with status {status}.")
             if status < 500:
                 raise error from None
         except httpx.HTTPError as exc:
-            logger.error("Storage upload failed (attempt %s/%s): %s", attempt, attempts, type(exc).__name__)
+            logger.error(
+                "Storage upload of %s (%.1f KB) failed after %.2fs (attempt %s/%s): %s",
+                path, size_kb, time.monotonic() - started, attempt, attempts, type(exc).__name__,
+            )
             error = StorageError(f"Storage upload failed: network error ({type(exc).__name__}).")
         if attempt < attempts:
             sleep(RETRY_DELAYS_SECONDS[attempt - 1])
