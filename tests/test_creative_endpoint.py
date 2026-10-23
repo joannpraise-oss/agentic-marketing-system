@@ -1,3 +1,4 @@
+import time
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -23,7 +24,10 @@ PAYLOAD = {
 @pytest.fixture
 def mocks(monkeypatch):
     """OpenAI, Higgsfield and storage all faked. Set `fail` / `upload_fail` to a prompt -> exception."""
-    state = SimpleNamespace(planner_calls=[], generated=[], uploads=[], fail={}, upload_fail={})
+    state = SimpleNamespace(
+        planner_calls=[], generated=[], uploads=[], fail={}, upload_fail={},
+        active_uploads=0, max_parallel_uploads=0,
+    )
 
     def create_with_completion(**kwargs):
         state.planner_calls.append(kwargs)
@@ -39,6 +43,10 @@ def mocks(monkeypatch):
         return higgsfield.GeneratedImage(data=f"img:{key}".encode(), content_type="image/png", request_id=f"r-{key}")
 
     def upload_asset(data, content_type, extension=""):
+        state.active_uploads += 1
+        state.max_parallel_uploads = max(state.max_parallel_uploads, state.active_uploads)
+        time.sleep(0.01)  # give any parallel upload a chance to overlap
+        state.active_uploads -= 1
         state.uploads.append((data, content_type, extension))
         prompt = data.decode().removeprefix("img:")
         if prompt in state.upload_fail:
@@ -90,6 +98,13 @@ def test_response_lists_placeholders_still_needing_input(client, monkeypatch, mo
 
     assert body[0]["needs_input"] == ["[▢ return window, e.g. 30 days]"]
     assert body[1]["needs_input"] == []
+
+
+def test_uploads_run_one_at_a_time_in_plan_order(client, mocks):
+    client.post("/creative/generate", json=PAYLOAD)
+
+    assert mocks.max_parallel_uploads == 1
+    assert [u[0] for u in mocks.uploads] == [b"img:track", b"img:beach", b"img:city"]
 
 
 def test_real_build_prompt_reaches_the_planner(client, mocks):

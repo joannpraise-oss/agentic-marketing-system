@@ -30,15 +30,12 @@ def _failure(exc: Exception) -> tuple[str, str]:
     return "storage_error", str(exc)
 
 
-def _render(item: creative.CreativeItem) -> tuple[higgsfield.GeneratedImage, str | None, Exception | None]:
-    """Generate and upload one image. Raises if generation fails (nothing was charged);
-    returns the upload error instead of raising, because the image is already paid for."""
-    image = higgsfield.generate_image(item.prompt)
+def _upload(image: higgsfield.GeneratedImage) -> tuple[str | None, Exception | None]:
+    """Returns the upload error instead of raising, because the image is already paid for."""
     try:
-        url = storage.upload_asset(image.data, image.content_type, EXTENSIONS.get(image.content_type, ""))
+        return storage.upload_asset(image.data, image.content_type, EXTENSIONS.get(image.content_type, "")), None
     except storage.StorageError as exc:
-        return image, None, exc
-    return image, url, None
+        return None, exc
 
 
 # Plain `def` (not async): every step blocks, so FastAPI runs this in its threadpool.
@@ -50,17 +47,25 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
 
     plan, planning_cost = creative.plan_creatives(data)
 
+    # Generate in parallel (each job waits on Higgsfield), then upload one at a time:
+    # parallel uploads were the suspect for intermittent ReadErrors from Supabase Storage.
     with ThreadPoolExecutor(max_workers=creative.NUM_CREATIVES) as pool:
-        futures = [pool.submit(_render, item) for item in plan.items]
+        futures = [pool.submit(higgsfield.generate_image, item.prompt) for item in plan.items]
     outcomes = []
     unexpected = None
     for item, future in zip(plan.items, futures):
         try:
-            outcomes.append((item, *future.result()))
+            image = future.result()
         except Exception as exc:  # generation failed: not charged, nothing to save
             outcomes.append((item, None, None, exc))
             if not isinstance(exc, higgsfield.HiggsfieldError):
                 unexpected = unexpected or exc  # a bug, not a provider failure: raise after saving paid work
+            continue
+        try:
+            outcomes.append((item, image, *_upload(image)))
+        except Exception as exc:
+            outcomes.append((item, image, None, exc))
+            unexpected = unexpected or exc
 
     # Save every paid image (even one whose upload failed) so the daily cap sees the real spend.
     # Planning cost is split evenly across the assets we save.
