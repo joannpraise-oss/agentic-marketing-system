@@ -516,3 +516,28 @@ def test_spec_from_request_carries_text_settings():
     request = text_request(text_choice="own", on_image_text="Go", text_mode="rendered")
     spec = creative.PlanSpec.from_request(request)
     assert (spec.text_choice, spec.text_mode, spec.own_texts) == ("own", "rendered", ("Go", "Go", "Go"))
+
+
+
+# --- strategy notes ---
+
+def test_strategy_notes_optional_trimmed_and_capped():
+    assert CreativeRequest(brief="b", brand=BRAND).strategy_notes is None
+    assert CreativeRequest(brief="b", brand=BRAND, strategy_notes="   ").strategy_notes is None
+    assert CreativeRequest(brief="b", brand=BRAND, strategy_notes=" Lead with comfort. ").strategy_notes == "Lead with comfort."
+    CreativeRequest(brief="b", brand=BRAND, strategy_notes="x" * 1500)
+    with pytest.raises(ValidationError):
+        CreativeRequest(brief="b", brand=BRAND, strategy_notes="x" * 1501)
+
+
+def test_build_prompt_shows_strategy_notes_after_trend_notes():
+    request = REQUEST.model_copy(update={"strategy_notes": "Lead with comfort, not speed."})
+
+    prompt = creative.build_prompt(request, "UGC beats studio on TikTok.")
+
+    assert "STRATEGY NOTES" in prompt and "Lead with comfort, not speed." in prompt
+    assert prompt.index("TREND NOTES") < prompt.index("STRATEGY NOTES") < prompt.index("RULES:")
+
+
+def test_build_prompt_omits_strategy_section_without_notes():
+    assert "STRATEGY NOTES" not in creative.build_prompt(REQUEST, "notes")

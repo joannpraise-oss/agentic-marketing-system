@@ -355,6 +355,10 @@ def build_prompt(request: CreativeRequest, trend_notes: str) -> str:
     goal = request.goal or "no specific goal"
     platform = request.platform or "platform-agnostic"
     trends = f"\nTREND NOTES (background context, not rules):\n{trend_notes}\n" if trend_notes.strip() else ""
+    strategy = (
+        f"\nSTRATEGY NOTES (direction for this campaign; the RULES below still apply):\n{request.strategy_notes}\n"
+        if request.strategy_notes else ""
+    )
 
     return f"""You are a senior performance creative director planning paid social ads.
 
@@ -372,7 +376,7 @@ CONTEXT:
 - Offer type: {request.offer_type}
 - Goal: {goal}
 - Platform: {platform}
-{trends}
+{trends}{strategy}
 {offer_type_guidance(request)}
 {_source_text_section(request)}{_on_image_text_section(request)}
 ANALYZE (before choosing any image):

@@ -17,6 +17,7 @@ DEFAULT_CREATIVE_COUNT = 3
 MAX_ANGLES = 5
 MAX_ANGLE_CHARS = 60
 MAX_SOURCE_TEXT_CHARS = 2000
+MAX_STRATEGY_NOTES_CHARS = 1500
 MAX_ON_IMAGE_WORDS = 12
 MAX_RENDERED_WORDS = 5  # image models only spell short text reliably
 
@@ -48,6 +49,8 @@ class CreativeRequest(BaseModel):
     # A snippet to quote (e.g. from a book or post); the caller must confirm they hold the rights.
     source_text: Optional[str] = Field(default=None, max_length=MAX_SOURCE_TEXT_CHARS)
     has_text_rights: bool = False
+    # Campaign direction for the planner; the Strategize feature will fill this.
+    strategy_notes: Optional[str] = Field(default=None, max_length=MAX_STRATEGY_NOTES_CHARS)
     # Text on the image: the caller's own words, the planner's suggestion, or none.
     text_choice: TextChoice = "none"
     # For "own": one line for every creative, or a list with one line per creative.
@@ -67,6 +70,13 @@ class CreativeRequest(BaseModel):
         if len({a.casefold() for a in cleaned}) != len(cleaned):
             raise ValueError("Angles must be distinct.")
         return cleaned
+
+    @field_validator("strategy_notes")
+    @classmethod
+    def blank_strategy_notes_are_none(cls, notes: Optional[str]) -> Optional[str]:
+        if notes is None:
+            return None
+        return notes.strip() or None
 
     @model_validator(mode="after")
     def source_text_needs_rights(self) -> "CreativeRequest":
