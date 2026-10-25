@@ -21,15 +21,7 @@ from db.database import get_session
 from main import app
 
 
-REAL_OFFER_TYPE_GUIDANCE = creative_module.offer_type_guidance
 
-
-@pytest.fixture(autouse=True)
-def stub_offer_type_guidance(monkeypatch):
-    """offer_type_guidance is still a stub; give build_prompt a stand-in section until it's written."""
-    monkeypatch.setattr(
-        creative_module, "offer_type_guidance", lambda request: f"OFFER TYPE: {request.offer_type} (test stand-in)"
-    )
 
 
 @pytest.fixture

@@ -295,7 +295,32 @@ def offer_type_guidance(request: CreativeRequest) -> str:
     "OFFER TYPE:" heading, keeps this readable. request.brand.offer is the
     thing being promoted, whatever the type.
     """
-    raise NotImplementedError("offer_type_guidance is yours to write")
+    guidance = {
+        "physical_product": (
+            "This ad sells a physical product. Show the product itself, recognizable,\n"
+            "in use or on display. Avoid: a generic stand-in that looks like a different product."
+        ),
+        "service": (
+            "This ad sells a service, not a physical product. Show the RESULT and the\n"
+            "EXPERIENCE the customer gets: the finished outcome, the before -> after, the\n"
+            "moment in the chair, the client's confidence. Use the way this industry\n"
+            "typically shows its work, and lean on the TREND NOTES and STRATEGY NOTES\n"
+            "(when given) for current scroll-stopping ideas.\n"
+            "Avoid: false claims about results; images unrelated to the service; product\n"
+            "shots of items the business does not sell; results that look impossible."
+        ),
+        "content": (
+            "This ad promotes content (a book, tips, quotes, ideas), not a product.\n"
+            "Show a visual that makes the message land in one glance: a mood scene, a\n"
+            "narrator, or a quote-card style background with space for on-image text.\n"
+            "Follow what audiences engage with today, from the TREND NOTES and STRATEGY\n"
+            "NOTES (when given), and the formats this kind of content commonly uses.\n"
+            "Avoid: quotes or lines not in the source text; attributing words to real\n"
+            "people; visuals unrelated to the message; implying endorsements."
+        ),
+
+    }
+    return f"OFFER TYPE: {request.offer_type}\n{guidance[request.offer_type]}\n"
 
 
 def _format_menu(offer_type: str) -> str:

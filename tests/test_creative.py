@@ -286,11 +286,6 @@ def test_plan_creatives_validates_with_the_request_spec(mock_planner):
     assert spec == creative.PlanSpec(count=3, offer_type="service")
 
 
-def test_offer_type_guidance_is_a_stub_for_now():
-    from tests.conftest import REAL_OFFER_TYPE_GUIDANCE
-
-    with pytest.raises(NotImplementedError):
-        REAL_OFFER_TYPE_GUIDANCE(REQUEST)
 
 
 
