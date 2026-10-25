@@ -46,7 +46,7 @@ class Asset(SQLModel, table=True):
     alt_text: Optional[str] = Field(default=None)
     faq: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     format: Optional[str] = Field(default=None)  # creative format, e.g. "ugc", "flat_lay"
-    offer_type: Optional[str] = Field(default=None)  # physical_product | service | content | idea_test
+    offer_type: Optional[str] = Field(default=None)  # physical_product | service | content
     angle: Optional[str] = Field(default=None)  # the requested angle this creative was made for
     text_rights_confirmed: Optional[bool] = Field(default=None)  # set when the request quoted source_text
     text_choice: Optional[str] = Field(default=None)  # own | suggest | none

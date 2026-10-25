@@ -258,7 +258,6 @@ def test_request_offer_type_defaults_to_physical_product_and_is_validated():
     ("physical_product", ["ugc", "studio_hero", "flat_lay"]),
     ("service", ["before_after", "experience", "problem_solution"]),
     ("content", ["mood_scene", "narrator", "lifestyle"]),
-    ("idea_test", ["concept", "problem_solution", "ugc"]),
 ])
 def test_plan_accepts_formats_allowed_for_the_offer_type(offer_type, formats):
     assert len(plan_for(formats, offer_type).items) == 3
@@ -267,7 +266,6 @@ def test_plan_accepts_formats_allowed_for_the_offer_type(offer_type, formats):
 @pytest.mark.parametrize("offer_type, bad_format", [
     ("service", "flat_lay"),          # a service has no product to lay out
     ("content", "studio_hero"),
-    ("idea_test", "model_with_product"),
     ("physical_product", "narrator"),
 ])
 def test_plan_rejects_formats_that_do_not_fit_the_offer_type(offer_type, bad_format):
@@ -541,3 +539,11 @@ def test_build_prompt_shows_strategy_notes_after_trend_notes():
 
 def test_build_prompt_omits_strategy_section_without_notes():
     assert "STRATEGY NOTES" not in creative.build_prompt(REQUEST, "notes")
+
+
+
+def test_idea_test_offer_type_and_concept_format_are_gone():
+    with pytest.raises(ValidationError):
+        CreativeRequest(brief="b", brand=BRAND, offer_type="idea_test")
+    assert "concept" not in creative.FORMAT_OPENERS
+    assert set(creative.FORMATS_BY_OFFER_TYPE) == {"physical_product", "service", "content"}

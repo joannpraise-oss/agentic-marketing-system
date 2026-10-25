@@ -21,7 +21,7 @@ MAX_STRATEGY_NOTES_CHARS = 1500
 MAX_ON_IMAGE_WORDS = 12
 MAX_RENDERED_WORDS = 5  # image models only spell short text reliably
 
-OfferType = Literal["physical_product", "service", "content", "idea_test"]
+OfferType = Literal["physical_product", "service", "content"]
 TextChoice = Literal["own", "suggest", "none"]
 TextMode = Literal["overlay", "rendered"]
 

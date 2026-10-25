@@ -37,7 +37,7 @@ TREND_NOTES_PATH = Path(__file__).resolve().parent.parent / "config" / "trend_no
 
 CreativeFormat = Literal[
     "ugc", "model_with_product", "lifestyle", "studio_hero", "flat_lay", "problem_solution", "seasonal",
-    "before_after", "experience", "mood_scene", "narrator", "concept",
+    "before_after", "experience", "mood_scene", "narrator",
 ]
 
 # Every image prompt must open with its format's framing, so the label and the picture agree.
@@ -53,7 +53,6 @@ FORMAT_OPENERS: dict[str, str] = {
     "experience": "Experience photo",
     "mood_scene": "Atmospheric mood scene",
     "narrator": "Photo of a fictional narrator",
-    "concept": "Concept visual",
 }
 # What each format shows; build_prompt lists these for the formats the offer type allows.
 FORMAT_DESCRIPTIONS: dict[str, str] = {
@@ -68,17 +67,15 @@ FORMAT_DESCRIPTIONS: dict[str, str] = {
     "experience": "the moment of receiving the service (e.g. in the chair) and how it feels",
     "mood_scene": "an atmospheric scene that carries the content's mood",
     "narrator": "a fictional narrator or host figure presenting the content",
-    "concept": "a visual metaphor or concept illustration for one angle of the idea",
 }
 # Visuals must fit the offer: products show the product, services the result and experience,
-# content a mood or a narrator, idea tests a concept per angle.
+# content a mood or a narrator.
 FORMATS_BY_OFFER_TYPE: dict[str, tuple[str, ...]] = {
     "physical_product": (
         "ugc", "model_with_product", "lifestyle", "studio_hero", "flat_lay", "problem_solution", "seasonal",
     ),
     "service": ("before_after", "experience", "problem_solution", "ugc", "lifestyle", "seasonal"),
     "content": ("mood_scene", "narrator", "lifestyle", "seasonal"),
-    "idea_test": ("concept", "problem_solution", "lifestyle", "ugc"),
 }
 # Overhead framing is what makes a flat lay; it isn't allowed under any other label.
 # ("overhead" alone is left out: "overhead lighting" is common in normal prompts.)
@@ -244,10 +241,8 @@ def offer_type_guidance(request: CreativeRequest) -> str:
                              before -> after, the moment in the chair.
           content          - mood scenes, a narrator, or a quote-card style image
                              (text added via on_image_text, not invented in the image).
-          idea_test        - a concept visual per angle, testing the idea rather
-                             than claiming a finished product exists.
       - What to avoid for that type (e.g. no fake product shots for a service,
-        no implying an idea_test offer is already for sale).
+        no invented book covers or quotes for content).
       - The formats allowed for the type are listed separately by build_prompt
         (FORMATS_BY_OFFER_TYPE), so describe intent, not the format list.
 
