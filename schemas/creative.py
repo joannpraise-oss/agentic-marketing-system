@@ -15,6 +15,7 @@ class Brand(BaseModel):
 
 DEFAULT_CREATIVE_COUNT = 3
 MAX_ANGLES = 5
+MIN_TEST_ANGLES = 2
 MAX_ANGLE_CHARS = 60
 MAX_SOURCE_TEXT_CHARS = 2000
 MAX_STRATEGY_NOTES_CHARS = 1500
@@ -22,6 +23,22 @@ MAX_ON_IMAGE_WORDS = 12
 MAX_RENDERED_WORDS = 5  # image models only spell short text reliably
 
 OfferType = Literal["physical_product", "service", "content"]
+
+CreativeFormat = Literal[
+    "ugc", "model_with_product", "lifestyle", "studio_hero", "flat_lay", "problem_solution", "seasonal",
+    "before_after", "experience", "mood_scene", "narrator",
+]
+
+# Visuals must fit the offer: products show the product, services the result and experience,
+# content a mood or a narrator.
+FORMATS_BY_OFFER_TYPE: dict[str, tuple[str, ...]] = {
+    "physical_product": (
+        "ugc", "model_with_product", "lifestyle", "studio_hero", "flat_lay", "problem_solution", "seasonal",
+    ),
+    "service": ("before_after", "experience", "problem_solution", "ugc", "lifestyle", "seasonal"),
+    "content": ("mood_scene", "narrator", "lifestyle", "seasonal"),
+}
+
 TextChoice = Literal["own", "suggest", "none"]
 TextMode = Literal["overlay", "rendered"]
 
@@ -46,6 +63,13 @@ class CreativeRequest(BaseModel):
     platform: Optional[Literal["instagram", "tiktok"]] = None
     # One creative per angle, all for the same offer. Without angles the run makes 3 creatives.
     angles: Optional[list[str]] = Field(default=None, min_length=1, max_length=MAX_ANGLES)
+    # A creative test: one creative per angle where ONLY the messaging angle varies, grouped
+    # by test_group_id so results can be compared. Needs 2-5 angles.
+    creative_test: bool = False
+    # The one format every angle uses; if missing, the planner picks one and explains why.
+    test_format: Optional[CreativeFormat] = None
+    # Let each angle use a different format (test_format must then be empty).
+    vary_format: bool = False
     # A snippet to quote (e.g. from a book or post); the caller must confirm they hold the rights.
     source_text: Optional[str] = Field(default=None, max_length=MAX_SOURCE_TEXT_CHARS)
     has_text_rights: bool = False
@@ -77,6 +101,22 @@ class CreativeRequest(BaseModel):
         if notes is None:
             return None
         return notes.strip() or None
+
+    @model_validator(mode="after")
+    def creative_test_settings(self) -> "CreativeRequest":
+        if not self.creative_test:
+            if self.test_format is not None or self.vary_format:
+                raise ValueError("test_format and vary_format are only used with creative_test: true.")
+            return self
+        if not self.angles or len(self.angles) < MIN_TEST_ANGLES:
+            raise ValueError(f"A creative test needs {MIN_TEST_ANGLES}-{MAX_ANGLES} angles.")
+        if self.test_format is not None:
+            if self.vary_format:
+                raise ValueError("Use test_format (one format for all angles) or vary_format, not both.")
+            if self.test_format not in FORMATS_BY_OFFER_TYPE[self.offer_type]:
+                allowed = ", ".join(FORMATS_BY_OFFER_TYPE[self.offer_type])
+                raise ValueError(f"test_format {self.test_format} does not fit a {self.offer_type} offer. Use one of: {allowed}.")
+        return self
 
     @model_validator(mode="after")
     def source_text_needs_rights(self) -> "CreativeRequest":

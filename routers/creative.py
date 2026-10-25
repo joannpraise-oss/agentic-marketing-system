@@ -1,4 +1,5 @@
 import logging
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -47,6 +48,7 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
     check_spend_caps(session, image_cost * count + creative.PLANNING_RESERVE_USD)
 
     plan, planning_cost = creative.plan_creatives(data)
+    test_group_id = uuid.uuid4().hex if data.creative_test else None
 
     # Generate in parallel (each job waits on Higgsfield), then upload one at a time:
     # parallel uploads were the suspect for intermittent ReadErrors from Supabase Storage.
@@ -91,6 +93,8 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
             text_choice=data.text_choice,
             text_mode=data.text_mode if data.text_choice != "none" else None,
             on_image_text=item.on_image_text,
+            test_group_id=test_group_id,
+            core_message=item.core_message,
             status="draft",
             cost_usd=(image_cost + planning_share).quantize(COST_PRECISION, rounding=ROUND_HALF_UP),
         )
@@ -126,6 +130,8 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
         raise next(o[3] for o in outcomes if o[3] is not None)
 
     return {
+        "test_group_id": test_group_id,
+        "format_rationale": plan.format_rationale,
         "assets": [_asset_out(asset) for asset in drafts],
         "failed_count": len(failed),
         "failed": failed,

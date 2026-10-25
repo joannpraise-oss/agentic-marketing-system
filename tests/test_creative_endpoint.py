@@ -326,3 +326,62 @@ def test_bad_on_image_text_is_400_before_any_spend(client, mocks):
 
     assert resp.status_code == 400
     assert mocks.planner_calls == []
+
+
+# --- creative tests ---
+
+COMPOSITION = "on a sunlit trail at golden hour, mid-shot"
+
+
+def creative_test_plan(angles):
+    items = []
+    for i, angle in enumerate(angles):
+        item = make_item(f"person{i}, {COMPOSITION}", "ugc")
+        item.update(angle=angle, core_message=f"{angle} message")
+        items.append(creative.CreativeItem(**item))
+    return creative.CreativePlan.model_construct(
+        items=items, format_rationale="UGC feels native for every angle.", shared_composition=COMPOSITION,
+    )
+
+
+def test_creative_test_assets_share_a_test_group_id(client, engine, mocks):
+    angles = ["moms", "braids and locs care", "styling"]
+    mocks.plan = creative_test_plan(angles)
+
+    resp = client.post("/creative/generate", json={**PAYLOAD, "creative_test": True, "angles": angles})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    group = body["test_group_id"]
+    assert group and len(group) == 32
+    assert body["format_rationale"] == "UGC feels native for every angle."
+    assets = saved_assets(engine)
+    assert [a.test_group_id for a in assets] == [group] * 3
+    assert [a.angle for a in assets] == angles
+    assert [a.core_message for a in assets] == [f"{a} message" for a in angles]
+    assert {a.format for a in assets} == {"ugc"}
+
+
+def test_separate_tests_get_separate_group_ids(client, mocks):
+    mocks.plan = creative_test_plan(["moms", "styling"])
+    body = {**PAYLOAD, "creative_test": True, "angles": ["moms", "styling"]}
+
+    first = client.post("/creative/generate", json=body).json()["test_group_id"]
+    second = client.post("/creative/generate", json=body).json()["test_group_id"]
+
+    assert first != second
+
+
+def test_normal_run_has_no_test_group(client, engine, mocks):
+    body = client.post("/creative/generate", json=PAYLOAD).json()
+
+    assert body["test_group_id"] is None and body["format_rationale"] is None
+    assert [(a.test_group_id, a.core_message) for a in saved_assets(engine)] == [(None, None)] * 3
+
+
+def test_creative_test_without_angles_is_400_before_any_spend(client, mocks):
+    resp = client.post("/creative/generate", json={**PAYLOAD, "creative_test": True})
+
+    assert resp.status_code == 400
+    assert "2-5 angles" in resp.text
+    assert mocks.planner_calls == []

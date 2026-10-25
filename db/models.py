@@ -52,6 +52,9 @@ class Asset(SQLModel, table=True):
     text_choice: Optional[str] = Field(default=None)  # own | suggest | none
     text_mode: Optional[str] = Field(default=None)  # overlay | rendered (None when there is no text)
     on_image_text: Optional[str] = Field(default=None)
+    # Creative tests: every asset of one test shares test_group_id; core_message is its angle's message.
+    test_group_id: Optional[str] = Field(default=None, index=True)
+    core_message: Optional[str] = Field(default=None)
     status: str = Field(default="draft")  # "draft" | "approved" | "archived"
     cost_usd: Decimal = Field(default=Decimal("0"), sa_column=Column(Numeric(10, 4), nullable=False))
     created_at: datetime = Field(default_factory=utcnow)

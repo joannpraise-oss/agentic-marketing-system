@@ -547,3 +547,152 @@ def test_idea_test_offer_type_and_concept_format_are_gone():
         CreativeRequest(brief="b", brand=BRAND, offer_type="idea_test")
     assert "concept" not in creative.FORMAT_OPENERS
     assert set(creative.FORMATS_BY_OFFER_TYPE) == {"physical_product", "service", "content"}
+
+
+# --- creative tests ---
+
+def ab_request(**fields):
+    return CreativeRequest(brief="b", brand=BRAND, **fields)
+
+
+def test_creative_test_defaults_off():
+    request = ab_request()
+    assert (request.creative_test, request.test_format, request.vary_format) == (False, None, False)
+
+
+@pytest.mark.parametrize("fields, message", [
+    ({"creative_test": True}, "needs 2-5 angles"),
+    ({"creative_test": True, "angles": ["moms"]}, "needs 2-5 angles"),
+    ({"creative_test": True, "angles": ["a", "b", "c", "d", "e", "f"]}, "at most 5"),
+    ({"test_format": "ugc"}, "only used with creative_test"),
+    ({"vary_format": True}, "only used with creative_test"),
+    ({"creative_test": True, "angles": ["a", "b"], "test_format": "ugc", "vary_format": True}, "not both"),
+    ({"creative_test": True, "angles": ["a", "b"], "test_format": "narrator"}, "does not fit a physical_product"),
+    ({"creative_test": True, "angles": ["a", "b"], "test_format": "billboard"}, "test_format"),
+])
+def test_creative_test_request_rules(fields, message):
+    with pytest.raises(ValidationError, match=message):
+        ab_request(**fields)
+
+
+COMPOSITION = "on a sunlit trail at golden hour, mid-shot, natural colors"
+
+
+def ab_items(formats, angles=("moms", "styling"), with_composition=True, core=True):
+    items = []
+    for i, (fmt, angle) in enumerate(zip(formats, angles)):
+        item = make_item(f"person{i}" + (f", {COMPOSITION}" if with_composition else ""), fmt)
+        item["angle"] = angle
+        if core:
+            item["core_message"] = f"Core message for {angle}"
+        items.append(item)
+    return items
+
+
+def validate_test(items, plan_fields=None, **spec_fields):
+    spec = creative.PlanSpec(count=len(items), angles=tuple(i["angle"] for i in items), creative_test=True, **spec_fields)
+    return creative.CreativePlan.model_validate({"items": items, **(plan_fields or {})}, context={"spec": spec})
+
+
+RATIONALE = {"format_rationale": "UGC reads as native on TikTok for every angle.", "shared_composition": COMPOSITION}
+
+
+def test_single_format_test_with_chosen_format_needs_rationale_and_composition():
+    plan = validate_test(ab_items(["ugc", "ugc"]), RATIONALE)
+
+    assert plan.format_rationale.startswith("UGC reads")
+    assert plan.shared_composition == COMPOSITION
+    assert [i.core_message for i in plan.items] == ["Core message for moms", "Core message for styling"]
+
+
+@pytest.mark.parametrize("plan_fields, message", [
+    ({"shared_composition": COMPOSITION}, "format_rationale"),
+    ({"format_rationale": "Because."}, "shared_composition"),
+])
+def test_single_format_test_missing_plan_fields(plan_fields, message):
+    with pytest.raises(ValidationError, match=message):
+        validate_test(ab_items(["ugc", "ugc"]), plan_fields)
+
+
+def test_single_format_test_rejects_mixed_formats():
+    with pytest.raises(ValidationError, match="same format"):
+        validate_test(ab_items(["ugc", "lifestyle"]), RATIONALE)
+
+
+def test_test_format_is_enforced_and_needs_no_rationale():
+    plan = validate_test(ab_items(["studio_hero", "studio_hero"]), {"shared_composition": COMPOSITION},
+                         test_format="studio_hero")
+    assert plan.format_rationale is None
+
+    with pytest.raises(ValidationError, match="must use the format studio_hero"):
+        validate_test(ab_items(["ugc", "ugc"]), RATIONALE, test_format="studio_hero")
+
+
+def test_every_prompt_must_repeat_the_shared_composition():
+    items = ab_items(["ugc", "ugc"])
+    items[1]["prompt"] = "Candid smartphone photo of person1 in a city cafe"
+
+    with pytest.raises(ValidationError, match="Creative 2: the image prompt must include shared_composition"):
+        validate_test(items, RATIONALE)
+
+
+@pytest.mark.parametrize("core, message", [
+    (None, "core_message must be one line"),
+    ("line one\nline two", "core_message must be one line"),
+    (" ".join(["w"] * 21), "at most 20 words"),
+    ("Free returns: [▢ return policy, e.g. free 30-day returns]", "placeholders"),
+])
+def test_core_message_is_one_short_line(core, message):
+    items = ab_items(["ugc", "ugc"])
+    items[0]["core_message"] = core
+    with pytest.raises(ValidationError, match=message):
+        validate_test(items, RATIONALE)
+
+
+def test_vary_format_allows_different_formats_without_shared_composition():
+    plan = validate_test(ab_items(["ugc", "lifestyle"], with_composition=False), RATIONALE, vary_format=True)
+
+    assert [i.format for i in plan.items] == ["ugc", "lifestyle"]
+    assert plan.format_rationale is None and plan.shared_composition is None
+
+
+def test_outside_a_test_the_test_fields_are_dropped():
+    items = ab_items(["ugc", "lifestyle"])
+    spec = creative.PlanSpec(count=2, angles=("moms", "styling"))
+
+    plan = creative.CreativePlan.model_validate({"items": items, **RATIONALE}, context={"spec": spec})
+
+    assert plan.format_rationale is None and plan.shared_composition is None
+    assert [i.core_message for i in plan.items] == [None, None]
+
+
+def test_build_prompt_creative_test_section():
+    request = ab_request(creative_test=True, angles=["moms", "styling"])
+
+    prompt = creative.build_prompt(request, "")
+
+    assert "CREATIVE TEST" in prompt
+    assert "differ ONLY in its\nmessaging angle - the hook, the person shown and the caption" in prompt
+    assert "Pick ONE format" in prompt and "format_rationale" in prompt
+    assert "shared_composition" in prompt
+    assert "core message in one line" in prompt
+    assert "1. moms\n2. styling" in prompt
+
+
+def test_build_prompt_creative_test_with_test_format_and_vary_format():
+    fixed = creative.build_prompt(ab_request(creative_test=True, angles=["a", "b"], test_format="ugc"), "")
+    assert "Use the format ugc for EVERY concept" in fixed and "Pick ONE format" not in fixed
+
+    varied = creative.build_prompt(ab_request(creative_test=True, angles=["a", "b"], vary_format=True), "")
+    assert "formats may differ" in varied and "shared_composition" not in varied
+
+
+def test_plain_angles_prompt_is_not_a_creative_test():
+    prompt = creative.build_prompt(ab_request(angles=["a", "b"]), "")
+    assert "CREATIVE TEST" not in prompt
+    assert "core_message: leave empty" in prompt
+
+
+def test_spec_carries_creative_test_settings():
+    spec = creative.PlanSpec.from_request(ab_request(creative_test=True, angles=["a", "b"], test_format="ugc"))
+    assert (spec.creative_test, spec.test_format, spec.vary_format, spec.single_format_test) == (True, "ugc", False, True)

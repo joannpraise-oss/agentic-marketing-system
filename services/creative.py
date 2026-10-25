@@ -14,8 +14,10 @@ from pydantic import BaseModel, Field, ValidationInfo, model_validator
 from core.placeholders import asset_texts, find_placeholders
 from schemas.creative import (
     DEFAULT_CREATIVE_COUNT,
+    FORMATS_BY_OFFER_TYPE,
     MAX_ON_IMAGE_WORDS,
     MAX_RENDERED_WORDS,
+    CreativeFormat,
     CreativeRequest,
     on_image_text_problem,
 )
@@ -33,12 +35,8 @@ OUTPUT_USD_PER_MTOK = Decimal("0.60")
 # Planning cost is only known afterwards; this reserve goes into the pre-run spend check.
 PLANNING_RESERVE_USD = Decimal("0.01")
 NUM_CREATIVES = DEFAULT_CREATIVE_COUNT
+MAX_CORE_MESSAGE_WORDS = 20
 TREND_NOTES_PATH = Path(__file__).resolve().parent.parent / "config" / "trend_notes.md"
-
-CreativeFormat = Literal[
-    "ugc", "model_with_product", "lifestyle", "studio_hero", "flat_lay", "problem_solution", "seasonal",
-    "before_after", "experience", "mood_scene", "narrator",
-]
 
 # Every image prompt must open with its format's framing, so the label and the picture agree.
 FORMAT_OPENERS: dict[str, str] = {
@@ -68,15 +66,6 @@ FORMAT_DESCRIPTIONS: dict[str, str] = {
     "mood_scene": "an atmospheric scene that carries the content's mood",
     "narrator": "a fictional narrator or host figure presenting the content",
 }
-# Visuals must fit the offer: products show the product, services the result and experience,
-# content a mood or a narrator.
-FORMATS_BY_OFFER_TYPE: dict[str, tuple[str, ...]] = {
-    "physical_product": (
-        "ugc", "model_with_product", "lifestyle", "studio_hero", "flat_lay", "problem_solution", "seasonal",
-    ),
-    "service": ("before_after", "experience", "problem_solution", "ugc", "lifestyle", "seasonal"),
-    "content": ("mood_scene", "narrator", "lifestyle", "seasonal"),
-}
 # Overhead framing is what makes a flat lay; it isn't allowed under any other label.
 # ("overhead" alone is left out: "overhead lighting" is common in normal prompts.)
 FLAT_LAY_CUES = (
@@ -99,6 +88,9 @@ class CreativeItem(BaseModel):
     faq: list[FAQ] = Field(min_length=2, max_length=2)
     angle: str | None = Field(default=None, description="The requested angle this creative is for, copied exactly.")
     on_image_text: str | None = Field(default=None, description="Words shown on the image, if text is used.")
+    core_message: str | None = Field(
+        default=None, description="Creative tests only: this angle's core message in one line.",
+    )
     needs_input: list[str] = Field(
         default_factory=list,
         description="Every [▢ ...] placeholder used in the caption or FAQ, copied exactly.",
@@ -134,6 +126,13 @@ class PlanSpec:
     text_choice: str = "none"
     text_mode: str = "overlay"
     own_texts: tuple[str, ...] | None = None
+    creative_test: bool = False
+    test_format: str | None = None
+    vary_format: bool = False
+
+    @property
+    def single_format_test(self) -> bool:
+        return self.creative_test and not self.vary_format
 
     @classmethod
     def from_request(cls, request: CreativeRequest) -> "PlanSpec":
@@ -143,6 +142,8 @@ class PlanSpec:
             count=request.creative_count(), offer_type=request.offer_type, angles=angles,
             text_choice=request.text_choice, text_mode=request.text_mode,
             own_texts=tuple(own) if own else None,
+            creative_test=request.creative_test, test_format=request.test_format,
+            vary_format=request.vary_format,
         )
 
 
@@ -181,6 +182,13 @@ def _check_on_image_text(item: "CreativeItem", spec: PlanSpec, index: int) -> No
 
 class CreativePlan(BaseModel):
     items: list[CreativeItem] = Field(min_length=1)
+    format_rationale: str | None = Field(
+        default=None, description="Creative tests with one chosen format: why that format suits every angle.",
+    )
+    shared_composition: str | None = Field(
+        default=None,
+        description="Creative tests with one format: the framing, setting, lighting and style every prompt repeats word for word.",
+    )
 
     @model_validator(mode="after")
     def matches_spec(self, info: ValidationInfo) -> "CreativePlan":
@@ -212,7 +220,44 @@ class CreativePlan(BaseModel):
                 )
         for index, item in enumerate(items):
             _check_on_image_text(item, spec, index)
+        self._check_creative_test(spec)
         return self
+
+    def _check_creative_test(self, spec: PlanSpec) -> None:
+        if not spec.creative_test:
+            self.format_rationale = self.shared_composition = None
+            for item in self.items:
+                item.core_message = None
+            return
+        for index, item in enumerate(self.items, 1):
+            message = (item.core_message or "").strip()
+            if not message or "\n" in message or len(message.split()) > MAX_CORE_MESSAGE_WORDS:
+                raise ValueError(
+                    f"Creative {index}: core_message must be one line of at most {MAX_CORE_MESSAGE_WORDS} words."
+                )
+            if find_placeholders([message]):
+                raise ValueError(f"Creative {index}: core_message must not contain [▢ ...] placeholders.")
+            item.core_message = message
+        if not spec.single_format_test:
+            self.format_rationale = self.shared_composition = None
+            return
+        # Only the angle may vary: one format and one composition across the whole test.
+        formats = {item.format for item in self.items}
+        if spec.test_format and formats != {spec.test_format}:
+            raise ValueError(f"Every creative in this test must use the format {spec.test_format}.")
+        if len(formats) != 1:
+            raise ValueError("Every creative in this test must use the same format.")
+        if spec.test_format:
+            self.format_rationale = None
+        elif not (self.format_rationale or "").strip():
+            raise ValueError("Explain in format_rationale why this one format suits every angle.")
+        composition = (self.shared_composition or "").strip()
+        if not composition:
+            raise ValueError("Write shared_composition: the framing, setting, lighting and style every prompt shares.")
+        for index, item in enumerate(self.items, 1):
+            if composition.lower() not in item.prompt.lower():
+                raise ValueError(f"Creative {index}: the image prompt must include shared_composition word for word.")
+        self.shared_composition = composition
 
 
 def load_trend_notes() -> str:
@@ -267,10 +312,35 @@ def _task_intro(request: CreativeRequest) -> str:
             "brand, goal and platform:"
         )
     angles = "\n".join(f"{i}. {angle}" for i, angle in enumerate(request.angles, 1))
+    if not request.creative_test:
+        return (
+            f"Create exactly {len(request.angles)} ad concepts for the same offer, one per angle below, in this\n"
+            "order. Each concept speaks to its angle's audience or use. Pick the best format for each\n"
+            f"angle; formats may repeat across angles.\nANGLES:\n{angles}\n\nFormats:"
+        )
+    if request.vary_format:
+        fmt = "Pick the best format for each angle; formats may differ. Keep everything else as alike as you can."
+        composition = ""
+    else:
+        if request.test_format:
+            fmt = f"Use the format {request.test_format} for EVERY concept."
+        else:
+            fmt = (
+                "Pick ONE format from the list below for EVERY concept, and explain in format_rationale\n"
+                "why it suits all the angles."
+            )
+        composition = (
+            "\nKeep the composition identical: write the shared framing, setting, lighting and style once\n"
+            "in shared_composition, and include it word for word in every image prompt."
+        )
     return (
-        f"Create exactly {len(request.angles)} ad concepts for the same offer, one per angle below, in this\n"
-        "order. Each concept speaks to its angle's audience or use. Pick the best format for each\n"
-        f"angle; formats may repeat across angles.\nANGLES:\n{angles}\n\nFormats:"
+        f"CREATIVE TEST: create exactly {len(request.angles)} ad concepts for the same offer, one per angle\n"
+        "below, in this order. This is a test of messaging: each concept must differ ONLY in its\n"
+        "messaging angle - the hook, the person shown and the caption. Keep the format, the on-image\n"
+        "text approach and the composition the same across angles, so any difference in results comes\n"
+        f"from the angle.\n{fmt}{composition}\n"
+        "For each concept, state the angle's core message in one line in core_message.\n"
+        f"ANGLES:\n{angles}\n\nFormats:"
     )
 
 
@@ -398,6 +468,7 @@ For each concept:
 - faq: exactly 2 questions a shopper in this audience would ask, with answers
 - needs_input: every [▢ ...] placeholder used in the caption or FAQ, copied exactly
 - on_image_text: {"leave empty" if request.text_choice == "none" else "the words on the image, as set out under ON-IMAGE TEXT"}
+- core_message: {f"this angle's core message in one line (at most {MAX_CORE_MESSAGE_WORDS} words)" if request.creative_test else "leave empty"}
 
 CHECK (every concept must pass all three, or revise it):
 - Clarity: would a buyer understand what is being sold within 2 seconds?
