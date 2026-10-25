@@ -357,6 +357,8 @@ def test_creative_test_assets_share_a_test_group_id(client, engine, mocks):
     assert body["format_rationale"] == "UGC feels native for every angle."
     assets = saved_assets(engine)
     assert [a.test_group_id for a in assets] == [group] * 3
+    assert body["test_mode"] == "fixed_format"
+    assert [a.test_mode for a in assets] == ["fixed_format"] * 3
     assert [a.angle for a in assets] == angles
     assert [a.core_message for a in assets] == [f"{a} message" for a in angles]
     assert {a.format for a in assets} == {"ugc"}
@@ -375,8 +377,8 @@ def test_separate_tests_get_separate_group_ids(client, mocks):
 def test_normal_run_has_no_test_group(client, engine, mocks):
     body = client.post("/creative/generate", json=PAYLOAD).json()
 
-    assert body["test_group_id"] is None and body["format_rationale"] is None
-    assert [(a.test_group_id, a.core_message) for a in saved_assets(engine)] == [(None, None)] * 3
+    assert body["test_group_id"] is None and body["format_rationale"] is None and body["test_mode"] is None
+    assert [(a.test_group_id, a.core_message, a.test_mode) for a in saved_assets(engine)] == [(None, None, None)] * 3
 
 
 def test_creative_test_without_angles_is_400_before_any_spend(client, mocks):
@@ -385,3 +387,22 @@ def test_creative_test_without_angles_is_400_before_any_spend(client, mocks):
     assert resp.status_code == 400
     assert "2-5 angles" in resp.text
     assert mocks.planner_calls == []
+
+
+
+def test_varied_format_test_is_marked_varied(client, engine, mocks):
+    plan = creative_test_plan(["moms", "styling"])
+    lifestyle = make_item("person9", "lifestyle")
+    lifestyle.update(angle="styling", core_message="styling message")
+    plan.items[1] = creative.CreativeItem(**lifestyle)
+    mocks.plan = plan
+
+    body = {**PAYLOAD, "creative_test": True, "angles": ["moms", "styling"], "vary_format": True}
+    resp = client.post("/creative/generate", json=body)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["test_mode"] == "varied_format"
+    assets = saved_assets(engine)
+    assert [(a.test_mode, a.angle, a.format) for a in assets] == [
+        ("varied_format", "moms", "ugc"), ("varied_format", "styling", "lifestyle"),
+    ]

@@ -49,6 +49,7 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
 
     plan, planning_cost = creative.plan_creatives(data)
     test_group_id = uuid.uuid4().hex if data.creative_test else None
+    test_mode = ("varied_format" if data.vary_format else "fixed_format") if data.creative_test else None
 
     # Generate in parallel (each job waits on Higgsfield), then upload one at a time:
     # parallel uploads were the suspect for intermittent ReadErrors from Supabase Storage.
@@ -94,6 +95,7 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
             text_mode=data.text_mode if data.text_choice != "none" else None,
             on_image_text=item.on_image_text,
             test_group_id=test_group_id,
+            test_mode=test_mode,
             core_message=item.core_message,
             status="draft",
             cost_usd=(image_cost + planning_share).quantize(COST_PRECISION, rounding=ROUND_HALF_UP),
@@ -131,6 +133,7 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
 
     return {
         "test_group_id": test_group_id,
+        "test_mode": test_mode,
         "format_rationale": plan.format_rationale,
         "assets": [_asset_out(asset) for asset in drafts],
         "failed_count": len(failed),

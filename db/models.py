@@ -54,6 +54,9 @@ class Asset(SQLModel, table=True):
     on_image_text: Optional[str] = Field(default=None)
     # Creative tests: every asset of one test shares test_group_id; core_message is its angle's message.
     test_group_id: Optional[str] = Field(default=None, index=True)
+    # fixed_format: only the angle varies, so results compare by angle.
+    # varied_format: angle and format both vary, so results must be reported as angle + format.
+    test_mode: Optional[str] = Field(default=None)
     core_message: Optional[str] = Field(default=None)
     status: str = Field(default="draft")  # "draft" | "approved" | "archived"
     cost_usd: Decimal = Field(default=Decimal("0"), sa_column=Column(Numeric(10, 4), nullable=False))

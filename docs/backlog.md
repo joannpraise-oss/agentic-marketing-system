@@ -33,3 +33,12 @@ insensitive), and flag mismatches so the asset can't be approved as-is.
   ask before running it against Supabase.
 - The read-back call costs money: include it in the spend estimate.
 - A mismatch could block approval the same way placeholders do.
+
+## Phase 4: report creative test results by the right key
+
+Assets in a creative test share `test_group_id` and carry `test_mode`:
+
+- `fixed_format`: only the angle varies, so compare and report results by `angle`.
+- `varied_format`: angle and format both vary, so report results as
+  `angle + format`. Never credit a difference to the angle alone, because the
+  format may have caused it.
