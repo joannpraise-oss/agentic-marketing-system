@@ -12,7 +12,7 @@ pillow_heif.register_heif_opener()  # iPhone photos (HEIC/HEIF)
 # Fix and warn: anything Pillow can read as an image is accepted, converted to JPEG and
 # shrunk for storage. Only non-images (and files too big to handle safely) are rejected.
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # memory guard, not a quality rule; big photos are shrunk
-MIN_SHORT_SIDE_PX = 1000  # below this we still accept, with a small_image warning
+MIN_SHORT_SIDE_PX = 768  # below this we still accept, with a small_image warning
 MAX_PIXELS = 120_000_000  # refuse decompression bombs before decoding; fits 108MP phone photos
 STORED_MAX_LONG_SIDE_PX = 2048  # keeps stored files well under Supabase's 6 MB standard-upload guidance
 JPEG_QUALITY = 90

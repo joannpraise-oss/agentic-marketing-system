@@ -72,8 +72,8 @@ def test_48mp_phone_jpeg_is_accepted_and_shrunk():
 
 
 @pytest.mark.parametrize("size, fmt, shown", [
-    ((999, 1600), "PNG", "999x1600px"),
-    ((1600, 800), "JPEG", "1600x800px"),
+    ((767, 1600), "PNG", "767x1600px"),
+    ((1600, 700), "JPEG", "1600x700px"),
     ((400, 300), "WEBP", "400x300px"),
 ])
 def test_small_photo_is_accepted_with_warning(size, fmt, shown):
@@ -81,14 +81,18 @@ def test_small_photo_is_accepted_with_warning(size, fmt, shown):
 
     assert (photo.width, photo.height) == size  # never upscaled
     assert [w.code for w in photo.warnings] == ["small_image"]
-    assert shown in photo.warnings[0].message and "1000px" in photo.warnings[0].message
+    assert shown in photo.warnings[0].message and "768px" in photo.warnings[0].message
+
+
+def test_photo_at_the_threshold_has_no_warning():
+    assert product_photo.prepare_product_photo(image_bytes((768, 1024))).warnings == []
 
 
 def test_small_image_warning_uses_upright_size():
-    # Stored 1600x900 with "rotate 90": really 900x1600, short side 900.
-    photo = product_photo.prepare_product_photo(with_exif((1600, 900), orientation=6))
+    # Stored 1600x700 with "rotate 90": really 700x1600, short side 700.
+    photo = product_photo.prepare_product_photo(with_exif((1600, 700), orientation=6))
 
-    assert "900x1600px" in photo.warnings[0].message
+    assert "700x1600px" in photo.warnings[0].message
 
 
 @pytest.mark.parametrize("data, message", [
@@ -160,12 +164,12 @@ def test_upload_over_old_10mb_limit_is_shrunk(client, stored):
 
 
 def test_low_resolution_upload_is_accepted_with_warning(client, stored):
-    resp = post_photo(client, image_bytes((800, 1200)))
+    resp = post_photo(client, image_bytes((700, 1200)))
 
     assert resp.status_code == 200, resp.text
     [warning] = resp.json()["warnings"]
     assert warning["code"] == "small_image"
-    assert "800x1200px" in warning["message"]
+    assert "700x1200px" in warning["message"]
     assert len(stored) == 1
 
 
