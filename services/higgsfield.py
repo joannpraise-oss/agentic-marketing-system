@@ -15,6 +15,9 @@ BASE_URL = "https://api.higgsfield.ai"
 PROVIDER = "higgsfield"
 MODEL = "higgsfield-ai/soul/v2/standard"
 IMAGE_PARAMS = {"aspect_ratio": "1:1", "resolution": "1080p", "num_images": 1}
+# Physical products with a reference photo. enhance_prompt=False is direct mode: on would force quality=high.
+PRODUCT_MODEL = "marketing-studio/image"
+PRODUCT_IMAGE_PARAMS = {"aspect_ratio": "1:1", "resolution": "1k", "quality": "low", "enhance_prompt": False}
 
 HTTP_TIMEOUT_SECONDS = 30
 GENERATION_TIMEOUT_SECONDS = 120
@@ -82,6 +85,13 @@ def estimate_cost() -> Decimal:
     return Decimal("0.006")
 
 
+def estimate_product_image_cost() -> Decimal:
+    """USD cost of one image with PRODUCT_IMAGE_PARAMS and one reference image."""
+    # From a live POST /estimate/marketing-studio/image check on 2026-10-30 with a short prompt.
+    # The price grows with prompt length: about $0.031 at 250 characters, $0.035 at 1050.
+    return Decimal("0.030")
+
+
 def _cancel_quietly(request_id: str) -> None:
     # Only queued jobs can be canceled (and refunded); anything else is best-effort.
     try:
@@ -110,11 +120,26 @@ def generate_image(
     clock: Callable[[], float] = time.monotonic,
 ) -> GeneratedImage:
     """Submit a Soul v2 job, poll until it finishes, and return the image bytes."""
-    job = _call(
-        "POST", f"/{MODEL}",
-        json={"prompt": prompt, **IMAGE_PARAMS},
-        headers={"Idempotency-Key": uuid.uuid4().hex},
-    )
+    return _generate(MODEL, {"prompt": prompt, **IMAGE_PARAMS}, timeout, sleep, clock)
+
+
+def generate_product_image(
+    prompt: str,
+    reference_url: str,
+    *,
+    timeout: float = GENERATION_TIMEOUT_SECONDS,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> GeneratedImage:
+    """Generate from a product photo. reference_url carries a token: never log it."""
+    body = {"prompt": prompt, "image_urls": [reference_url], **PRODUCT_IMAGE_PARAMS}
+    return _generate(PRODUCT_MODEL, body, timeout, sleep, clock)
+
+
+def _generate(
+    model: str, body: dict, timeout: float, sleep: Callable[[float], None], clock: Callable[[], float]
+) -> GeneratedImage:
+    job = _call("POST", f"/{model}", json=body, headers={"Idempotency-Key": uuid.uuid4().hex})
     request_id = job.get("request_id")
     if not request_id:
         raise HiggsfieldError("Higgsfield did not return a request id.")

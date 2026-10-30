@@ -44,7 +44,7 @@ class FakeHiggsfield:
     def request(self, method, url, **kwargs):
         self.calls.append((method, url, kwargs))
         req = httpx.Request(method, url)
-        if url.endswith("/" + higgsfield.MODEL):
+        if url.endswith(("/" + higgsfield.MODEL, "/" + higgsfield.PRODUCT_MODEL)):
             return httpx.Response(self.submit_status, json={"status": "queued", "request_id": "r1"}, request=req)
         if url.endswith("/cancel"):
             return httpx.Response(200, json={}, request=req)
@@ -99,6 +99,40 @@ def test_submit_sends_supported_resolution(fake):
     run(FakeClock())
 
     assert fake.calls[0][2]["json"]["resolution"] == "1080p"
+
+
+SIGNED = "https://proj.supabase.co/storage/v1/object/sign/product-photos/p.jpg?token=SECRET-TOKEN"
+
+
+def test_product_image_uses_marketing_studio_direct_low_1k_with_the_reference(fake):
+    clock = FakeClock()
+
+    image = higgsfield.generate_product_image("a bottle", SIGNED, sleep=clock.sleep, clock=clock)
+
+    assert image.data == b"png-bytes"
+    method, url, kwargs = fake.calls[0]
+    assert (method, url) == ("POST", f"{higgsfield.BASE_URL}/marketing-studio/image")
+    # Exactly these fields: the model rejects unknown ones, such as Soul's num_images.
+    assert kwargs["json"] == {
+        "prompt": "a bottle", "image_urls": [SIGNED],
+        "quality": "low", "resolution": "1k", "aspect_ratio": "1:1", "enhance_prompt": False,
+    }
+    assert kwargs["headers"]["Idempotency-Key"]
+
+
+def test_product_image_failure_never_logs_the_signed_url(fake, caplog):
+    fake.submit_status = 500
+    clock = FakeClock()
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(higgsfield.HiggsfieldError) as exc:
+        higgsfield.generate_product_image("a bottle", SIGNED, sleep=clock.sleep, clock=clock)
+
+    assert "SECRET-TOKEN" not in caplog.text and "SECRET-TOKEN" not in str(exc.value)
+
+
+def test_product_image_cost_is_the_low_quality_price(fake):
+    assert higgsfield.estimate_product_image_cost() == Decimal("0.030")
+    assert fake.calls == []
 
 
 def test_poll_delay_backs_off_and_caps(fake):

@@ -132,6 +132,117 @@ def test_spend_cap_blocks_before_any_spend(client, engine, mocks):
     assert len(saved_assets(engine)) == 1
 
 
+# --- physical_product runs with a product photo ---
+
+PHOTO = "f51db36f3c08442daae2a6325a563aac.jpg"
+SIGNED = f"https://proj.supabase.co/storage/v1/object/sign/product-photos/{PHOTO}?token=SECRET-TOKEN"
+LABEL = (
+    " The product label reads exactly «Acme». Keep all label text exactly as in the reference photo; "
+    "do not change or invent any text. No added props unless the format calls for them."
+)
+
+
+@pytest.fixture
+def photo_mocks(monkeypatch, mocks):
+    """Adds the signed URL and Marketing Studio to `mocks`; records (prompt, reference_url) calls."""
+    mocks.product_calls, mocks.signed = [], []
+
+    def create_signed_url(bucket, path):
+        mocks.signed.append((bucket, path))
+        return SIGNED
+
+    def generate_product_image(prompt, reference_url):
+        mocks.product_calls.append((prompt, reference_url))
+        key = prompt.removesuffix(LABEL).split()[-1]
+        return higgsfield.GeneratedImage(data=f"img:{key}".encode(), content_type="image/png", request_id=f"r-{key}")
+
+    monkeypatch.setattr(storage, "create_signed_url", create_signed_url)
+    monkeypatch.setattr(higgsfield, "generate_product_image", generate_product_image)
+    return mocks
+
+
+def test_photo_run_uses_marketing_studio_with_the_signed_url_and_label(client, engine, photo_mocks):
+    resp = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
+
+    assert resp.status_code == 200, resp.text
+    assert photo_mocks.signed == [("product-photos", PHOTO)]
+    assert photo_mocks.generated == []  # Soul v2 not used
+    assert len(photo_mocks.product_calls) == 3
+    assert {url for _, url in photo_mocks.product_calls} == {SIGNED}
+    assert all(prompt.endswith(LABEL) for prompt, _ in photo_mocks.product_calls)
+
+    assets = saved_assets(engine)
+    sent = {prompt for prompt, _ in photo_mocks.product_calls}
+    assert {asset.prompt for asset in assets} == sent  # saved exactly as sent
+    for asset in assets:
+        assert asset.model == "marketing-studio/image"
+        assert asset.provider == "higgsfield"
+        # $0.030 image + $0.00105 / 3 planning = $0.03035, rounded to 4 places
+        assert asset.cost_usd == Decimal("0.0304")
+
+
+def test_signed_url_is_never_returned_or_saved(client, engine, photo_mocks):
+    resp = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
+
+    assert "SECRET-TOKEN" not in resp.text
+    assert not any("SECRET-TOKEN" in asset.model_dump_json() for asset in saved_assets(engine))
+
+
+def test_run_without_a_photo_stays_on_soul_with_no_label_text(client, engine, photo_mocks):
+    assert client.post("/creative/generate", json=PAYLOAD).status_code == 200
+
+    assert photo_mocks.signed == [] and photo_mocks.product_calls == []
+    assert sorted(photo_mocks.generated) == ["beach", "city", "track"]
+    for asset in saved_assets(engine):
+        assert asset.model == higgsfield.MODEL
+        assert "product label" not in asset.prompt
+
+
+def test_spend_estimate_uses_the_higher_price_only_with_a_photo(client, engine, photo_mocks):
+    with Session(engine) as session:
+        session.add(make_asset(cost_usd=Decimal("4.92")))  # + $0.10 with a photo > 5.00; + $0.028 without
+        session.commit()
+
+    resp = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
+
+    assert resp.status_code == 402
+    assert photo_mocks.signed == [] and photo_mocks.planner_calls == [] and photo_mocks.product_calls == []
+    assert client.post("/creative/generate", json=PAYLOAD).status_code == 200
+
+
+def test_missing_photo_is_400_before_anything_is_spent(client, monkeypatch, photo_mocks):
+    def not_found(bucket, path):
+        raise storage.StorageObjectNotFound("Could not sign the file URL (status 400).")
+
+    monkeypatch.setattr(storage, "create_signed_url", not_found)
+
+    resp = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
+
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "invalid_product_photo"
+    assert photo_mocks.planner_calls == [] and photo_mocks.product_calls == []
+
+
+@pytest.mark.parametrize("path", [
+    "../assets/abc.jpg", "BE9A9FEE-8F9B-49C7-90D4-3A9D33CB3837_4_5005_c.jpeg", "abc.jpg", f"{PHOTO}\n", "",
+])
+def test_only_paths_from_the_upload_endpoint_are_accepted(client, photo_mocks, path):
+    resp = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": path})
+
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "invalid_input"
+    assert photo_mocks.signed == [] and photo_mocks.planner_calls == []
+
+
+@pytest.mark.parametrize("offer_type", ["service", "content"])
+def test_photo_is_rejected_for_other_offer_types(client, photo_mocks, offer_type):
+    resp = client.post("/creative/generate", json={**PAYLOAD, "offer_type": offer_type, "product_photo_path": PHOTO})
+
+    assert resp.status_code == 400
+    assert "physical_product" in resp.text
+    assert photo_mocks.signed == [] and photo_mocks.planner_calls == []
+
+
 @pytest.mark.parametrize("error, code", [
     (higgsfield.HiggsfieldTimeout("Image generation did not finish within 120s."), "image_timeout"),
     (higgsfield.HiggsfieldError("Image generation ended as 'nsfw'."), "image_provider_error"),

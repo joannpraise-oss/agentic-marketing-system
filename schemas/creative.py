@@ -82,6 +82,9 @@ class CreativeRequest(BaseModel):
     # overlay: the image leaves clean negative space and the text is added later (editable, free).
     # rendered: the model draws the text into the image (short text only; checked after generation).
     text_mode: TextMode = "overlay"
+    # From POST /creative/product-photo. That endpoint's random names are the only ones allowed,
+    # so only photos it has cleaned (no EXIF/GPS) can reach the image model.
+    product_photo_path: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{32}\.jpg$")
 
     @field_validator("angles")
     @classmethod
@@ -116,6 +119,12 @@ class CreativeRequest(BaseModel):
             if self.test_format not in FORMATS_BY_OFFER_TYPE[self.offer_type]:
                 allowed = ", ".join(FORMATS_BY_OFFER_TYPE[self.offer_type])
                 raise ValueError(f"test_format {self.test_format} does not fit a {self.offer_type} offer. Use one of: {allowed}.")
+        return self
+
+    @model_validator(mode="after")
+    def product_photo_needs_physical_product(self) -> "CreativeRequest":
+        if self.product_photo_path is not None and self.offer_type != "physical_product":
+            raise ValueError("product_photo_path is only used with offer_type 'physical_product'.")
         return self
 
     @model_validator(mode="after")

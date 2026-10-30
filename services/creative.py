@@ -275,6 +275,14 @@ def planning_cost(prompt_tokens: int, completion_tokens: int) -> Decimal:
     ) / Decimal(1_000_000)
 
 
+def with_product_label(prompt: str, brand_name: str) -> str:
+    """Image prompt for a run with a product photo: the model must copy the label, not reinvent it."""
+    return (
+        f"{prompt} The product label reads exactly «{brand_name}». Keep all label text exactly as in the "
+        "reference photo; do not change or invent any text. No added props unless the format calls for them."
+    )
+
+
 def offer_type_guidance(request: CreativeRequest) -> str:
     """Return the OFFER TYPE section of the planner prompt for request.offer_type.
 

@@ -2,6 +2,7 @@ import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Callable
 
 from fastapi import APIRouter, Depends, File, UploadFile
 from sqlmodel import Session
@@ -39,22 +40,36 @@ def _upload(image: higgsfield.GeneratedImage) -> tuple[str | None, Exception | N
         return None, exc
 
 
+def _product_image_generator(photo_path: str) -> Callable[[str], higgsfield.GeneratedImage]:
+    try:
+        reference_url = storage.create_signed_url(storage.PRODUCT_PHOTO_BUCKET, photo_path)
+    except storage.StorageObjectNotFound:
+        raise product_photo.ProductPhotoError("We can't find that product photo. Please upload it again.") from None
+    return lambda prompt: higgsfield.generate_product_image(prompt, reference_url)
+
+
 # Plain `def` (not async): every step blocks, so FastAPI runs this in its threadpool.
 @router.post("/creative/generate")
 def generate_creatives(data: CreativeRequest, session: Session = Depends(get_session)):
-    image_cost = higgsfield.estimate_cost()
+    has_photo = data.product_photo_path is not None
+    image_cost = higgsfield.estimate_product_image_cost() if has_photo else higgsfield.estimate_cost()
     # Nothing is spent before this check: planning is covered by a reserve, images by the estimate.
     count = creative.creative_count(data)
     check_spend_caps(session, image_cost * count + creative.PLANNING_RESERVE_USD)
 
+    # Signed before planning, so a bad photo path costs nothing.
+    generate = _product_image_generator(data.product_photo_path) if has_photo else higgsfield.generate_image
     plan, planning_cost = creative.plan_creatives(data)
+    if has_photo:
+        for item in plan.items:  # changed here, so the saved asset keeps the prompt actually sent
+            item.prompt = creative.with_product_label(item.prompt, data.brand.brand_name)
     test_group_id = uuid.uuid4().hex if data.creative_test else None
     test_mode = ("varied_format" if data.vary_format else "fixed_format") if data.creative_test else None
 
     # Generate in parallel (each job waits on Higgsfield), then upload one at a time:
     # parallel uploads were the suspect for intermittent ReadErrors from Supabase Storage.
     with ThreadPoolExecutor(max_workers=count) as pool:
-        futures = [pool.submit(higgsfield.generate_image, item.prompt) for item in plan.items]
+        futures = [pool.submit(generate, item.prompt) for item in plan.items]
     outcomes = []
     unexpected = None
     for item, future in zip(plan.items, futures):
@@ -81,7 +96,7 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
             campaign_brief=data.brief,
             kind="image",
             prompt=item.prompt,
-            model=higgsfield.MODEL,
+            model=higgsfield.PRODUCT_MODEL if has_photo else higgsfield.MODEL,
             provider=higgsfield.PROVIDER,
             file_url=url,
             caption=item.caption,

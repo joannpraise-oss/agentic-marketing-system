@@ -272,6 +272,24 @@ def test_signed_url_lasts_ten_minutes_and_is_absolute(monkeypatch, caplog):
     assert "SECRET-TOKEN" not in caplog.text
 
 
+@pytest.mark.parametrize("status, body, not_found", [
+    (400, {"statusCode": "404", "error": "not_found", "message": "Object not found"}, True),  # what Supabase sends
+    (404, {}, True),
+    (400, {"error": "invalid"}, False),
+    (403, {"error": "forbidden"}, False),
+])
+def test_signing_a_missing_object_is_reported_as_not_found(monkeypatch, status, body, not_found):
+    monkeypatch.setattr(
+        storage.httpx, "post",
+        lambda url, **kwargs: httpx.Response(status, json=body, request=httpx.Request("POST", url)),
+    )
+
+    with pytest.raises(storage.StorageError) as exc:
+        storage.create_signed_url("product-photos", "abc.jpg")
+
+    assert isinstance(exc.value, storage.StorageObjectNotFound) is not_found
+
+
 @pytest.mark.parametrize("outcome, message", [
     (404, "status 404"),
     (httpx.ConnectError("down"), "network error"),

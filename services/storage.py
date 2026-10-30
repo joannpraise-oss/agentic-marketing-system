@@ -24,6 +24,10 @@ class StorageError(Exception):
     """Upload failed. The message never contains credentials or response bodies."""
 
 
+class StorageObjectNotFound(StorageError):
+    """The requested object isn't in the bucket."""
+
+
 def check_supabase_url() -> None:
     """Fail fast at startup on a REST endpoint URL instead of the project URL."""
     url = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -61,6 +65,17 @@ def _error_message(response: httpx.Response, key: str) -> str:
         return ""
     parts = [str(body[field]) for field in ("error", "message") if body.get(field)]
     return ": ".join(parts).replace(key, "[redacted]")[:MAX_LOGGED_ERROR_CHARS]
+
+
+def _is_not_found(response: httpx.Response) -> bool:
+    # Supabase reports a missing object as HTTP 400 with {"error": "not_found"} in the body.
+    if response.status_code == 404:
+        return True
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("error") == "not_found"
 
 
 def upload_asset(
@@ -126,7 +141,8 @@ def create_signed_url(bucket: str, path: str, expires_in: int = SIGNED_URL_SECON
             "Signing %s/%s rejected with status %s: %s", bucket, path, exc.response.status_code,
             _error_message(exc.response, key) or "no error message",
         )
-        raise StorageError(f"Could not sign the file URL (status {exc.response.status_code}).") from None
+        error = StorageObjectNotFound if _is_not_found(exc.response) else StorageError
+        raise error(f"Could not sign the file URL (status {exc.response.status_code}).") from None
     except httpx.HTTPError as exc:
         logger.error("Signing %s/%s failed: %s", bucket, path, type(exc).__name__)
         raise StorageError("Could not sign the file URL: network error.") from None
