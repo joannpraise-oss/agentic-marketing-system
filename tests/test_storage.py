@@ -289,3 +289,39 @@ def test_signed_url_failures_raise_storage_error(monkeypatch, outcome, message):
 
     with pytest.raises(storage.StorageError, match=message):
         storage.create_signed_url("product-photos", "abc.jpg")
+
+
+def mock_request(monkeypatch, status=200, content=b""):
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return httpx.Response(status, content=content, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(storage.httpx, "request", fake_request)
+    return calls
+
+
+def test_download_product_photo_uses_authenticated_endpoint(monkeypatch):
+    calls = mock_request(monkeypatch, content=b"jpeg-bytes")
+
+    assert storage.download_product_photo("abc.jpg") == b"jpeg-bytes"
+    method, url, kwargs = calls[0]
+    assert (method, url) == ("GET", "https://proj.supabase.co/storage/v1/object/authenticated/product-photos/abc.jpg")
+    assert kwargs["headers"]["apikey"] == KEY
+
+
+def test_delete_product_photo(monkeypatch):
+    calls = mock_request(monkeypatch)
+
+    storage.delete_product_photo("abc.jpg")
+
+    assert calls[0][:2] == ("DELETE", "https://proj.supabase.co/storage/v1/object/product-photos/abc.jpg")
+
+
+@pytest.mark.parametrize("call", [storage.download_product_photo, storage.delete_product_photo])
+def test_private_request_failures_raise_storage_error(monkeypatch, call):
+    mock_request(monkeypatch, status=404)
+
+    with pytest.raises(storage.StorageError, match="status 404"):
+        call("abc.jpg")

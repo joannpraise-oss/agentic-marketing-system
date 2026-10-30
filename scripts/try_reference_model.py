@@ -1,8 +1,12 @@
 """One-off check: does a Higgsfield model keep a real product from a reference photo?
 
+The photo from the private product-photos bucket first goes through the same cleanup
+as the upload endpoint (JPEG, no EXIF/GPS, max 2048px). The cleaned copy is stored
+under a temporary path, and only that copy's 10-minute signed URL is sent to
+Higgsfield; the temporary copy is deleted at the end.
+
 Prints the /estimate price first and asks before spending anything. Then it makes
-ONE generation with a 10-minute signed URL to a photo in the private
-product-photos bucket, and saves the result in ./reference_check/ to compare by eye.
+ONE generation and saves the result in ./reference_check/ to compare by eye.
 
 Usage (from the repo root, with .env set up):
 
@@ -31,7 +35,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 load_dotenv()
 
-from services import higgsfield, storage  # noqa: E402  (needs .env loaded first)
+from services import higgsfield, product_photo, storage  # noqa: E402  (needs .env loaded first)
 
 OUTPUT_DIR = Path("reference_check")
 POLL_TIMEOUT_SECONDS = 180
@@ -81,7 +85,24 @@ def main() -> None:
     args = parser.parse_args()
 
     model_path = args.model_path.strip("/")
-    signed_url = storage.create_signed_url(storage.PRODUCT_PHOTO_BUCKET, args.photo_path)
+    # Never send the stored original: it may be a raw phone photo with GPS in its EXIF.
+    try:
+        photo = product_photo.prepare_product_photo(storage.download_product_photo(args.photo_path))
+    except product_photo.ProductPhotoError as exc:
+        sys.exit(f"Can't use {args.photo_path}: {exc}")
+    print(f"Cleaned photo: {photo.width}x{photo.height} JPEG, metadata removed")
+    for warning in photo.warnings:
+        print(f"  Warning ({warning.code}): {warning.message}")
+    clean_path = storage.upload_product_photo(photo.data)
+    try:
+        run(args, model_path, clean_path, photo.data)
+    finally:
+        storage.delete_product_photo(clean_path)
+        print("Deleted the temporary cleaned copy.")
+
+
+def run(args: argparse.Namespace, model_path: str, clean_path: str, clean_data: bytes) -> None:
+    signed_url = storage.create_signed_url(storage.PRODUCT_PHOTO_BUCKET, clean_path)
     body = build_body(args.prompt, args.field, args.field_shape, signed_url, args.param)
     print(f"Model: {model_path}\nBody:  {json.dumps(redacted(body, args.field))}")
 
@@ -112,10 +133,9 @@ def main() -> None:
         out = OUTPUT_DIR / f"{request_id}_{index}.png"
         out.write_bytes(response.content)
         print(f"Saved {out}")
-    reference = httpx.get(signed_url, timeout=60)
-    reference.raise_for_status()
-    (OUTPUT_DIR / f"{request_id}_reference.jpg").write_bytes(reference.content)
-    print(f"Saved the reference photo next to it for comparison: {OUTPUT_DIR}/{request_id}_reference.jpg")
+        print(f"Result URL: {image['url']}")
+    (OUTPUT_DIR / f"{request_id}_reference.jpg").write_bytes(clean_data)
+    print(f"Saved the cleaned reference next to it for comparison: {OUTPUT_DIR}/{request_id}_reference.jpg")
 
 
 if __name__ == "__main__":

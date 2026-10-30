@@ -80,6 +80,37 @@ def upload_product_photo(data: bytes, *, sleep: Callable[[float], None] | None =
     return path
 
 
+def download_product_photo(path: str) -> bytes:
+    """Read an object from the private product-photos bucket."""
+    return _private_request("GET", PRODUCT_PHOTO_BUCKET, path, "download").content
+
+
+def delete_product_photo(path: str) -> None:
+    """Delete an object from the private product-photos bucket."""
+    _private_request("DELETE", PRODUCT_PHOTO_BUCKET, path, "delete")
+
+
+def _private_request(method: str, bucket: str, path: str, action: str) -> httpx.Response:
+    base_url, key = _config()
+    url_path = "authenticated/" if method == "GET" else ""
+    try:
+        response = httpx.request(
+            method, f"{base_url}/storage/v1/object/{url_path}{bucket}/{path}",
+            headers=_auth_headers(key), timeout=TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.error(
+            "Storage %s of %s/%s rejected with status %s: %s", action, bucket, path, exc.response.status_code,
+            _error_message(exc.response, key) or "no error message",
+        )
+        raise StorageError(f"Storage {action} failed with status {exc.response.status_code}.") from None
+    except httpx.HTTPError as exc:
+        logger.error("Storage %s of %s/%s failed: %s", action, bucket, path, type(exc).__name__)
+        raise StorageError(f"Storage {action} failed: network error.") from None
+    return response
+
+
 def create_signed_url(bucket: str, path: str, expires_in: int = SIGNED_URL_SECONDS) -> str:
     """A short-lived URL for a private object. The URL carries a token: never log it."""
     base_url, key = _config()
