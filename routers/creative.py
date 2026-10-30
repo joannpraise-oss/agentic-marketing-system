@@ -152,16 +152,23 @@ def _asset_out(asset: Asset) -> dict:
 # Plain `def`: reading the upload, Pillow and the storage call all block.
 @router.post("/creative/product-photo")
 def upload_product_photo(file: UploadFile = File(...)):
-    """Check and store a product photo in the private bucket; returns its path for /creative/generate."""
-    data = file.file.read(product_photo.MAX_BYTES)  # stop reading at the limit
-    if len(data) >= product_photo.MAX_BYTES:
-        raise product_photo.ProductPhotoError("The photo must be under 10 MB.")
+    """Convert and store a product photo in the private bucket; returns its path for /creative/generate.
+
+    Fixable problems (format, file size) are fixed; quality concerns come back as warnings, not errors.
+    """
+    data = file.file.read(product_photo.MAX_UPLOAD_BYTES)  # stop reading at the limit
+    if len(data) >= product_photo.MAX_UPLOAD_BYTES:
+        raise product_photo.ProductPhotoError("The file is over 50 MB. Please upload a smaller photo.")
     photo = product_photo.prepare_product_photo(data)
     path = storage.upload_product_photo(photo.data)
-    logger.info("Stored product photo %s (%sx%s, %.1f KB)", path, photo.width, photo.height, len(photo.data) / 1024)
+    logger.info(
+        "Stored product photo %s (%sx%s, %.1f KB, warnings=%s)",
+        path, photo.width, photo.height, len(photo.data) / 1024, [w.code for w in photo.warnings],
+    )
     return {
         "product_photo_path": path,
         "width": photo.width,
         "height": photo.height,
         "size_kb": round(len(photo.data) / 1024, 1),
+        "warnings": [{"code": w.code, "message": w.message} for w in photo.warnings],
     }

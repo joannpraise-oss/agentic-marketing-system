@@ -29,6 +29,7 @@ openai==2.29.0
 orjson==3.11.9
 packaging==26.2
 pillow==13.0.0
+pillow_heif==1.8.1
 propcache==0.4.1
 psycopg2-binary==2.9.11
 pydantic==2.12.5
