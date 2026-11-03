@@ -34,17 +34,17 @@ insensitive), and flag mismatches so the asset can't be approved as-is.
 - The read-back call costs money: include it in the spend estimate.
 - A mismatch could block approval the same way placeholders do.
 
-## Verify the product label
+## Product label check: what's still missing
 
-**Problem:** physical_product runs with a product photo ask the image model to
-keep the label exact, but the model can still misspell it. In testing, "J’aduné"
-came back as "TADUNÉ" and "JADUNÉ" until the prompt spelled the name out. That
-was one good image, not proof it always works, and nothing checks the result.
+`services/label_check.py` reads the label off each product-photo image and flags
+`label_mismatch` when `brand_name` isn't on it. Not covered yet:
 
-**Idea:** after each image, read the label back (a vision model) and compare the
-brand name with `brand_name`, and the other text with the reference photo. Flag
-mismatches so the asset can't be approved as-is. This can share its storage,
-cost handling and approval block with "Verify rendered on-image text" above.
+- Only the brand name is compared. The rest of the label (e.g. "PEPTIDE
+  INFUSED", the size) is read and stored in `label_read` but not checked
+  against the reference photo.
+- The reader can misread small text too, so a correct image can be flagged.
+  There's no way to override a flag after a person has checked the image;
+  today the fix is to regenerate.
 
 ## Phase 4: report creative test results by the right key
 

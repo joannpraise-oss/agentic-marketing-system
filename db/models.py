@@ -4,7 +4,7 @@ from sqlmodel import SQLModel, Field
 from typing import Any, Optional
 from datetime import datetime, timezone
 
-from core.placeholders import PlaceholdersRemainError, asset_texts, find_placeholders
+from core.placeholders import PlaceholdersRemainError, needs_input
 
 
 def utcnow() -> datetime:
@@ -58,6 +58,9 @@ class Asset(SQLModel, table=True):
     # varied_format: angle and format both vary, so results must be reported as angle + format.
     test_mode: Optional[str] = Field(default=None)
     core_message: Optional[str] = Field(default=None)
+    # Product-photo runs: did the generated label show brand_name? None = not checked (no photo).
+    label_ok: Optional[bool] = Field(default=None)
+    label_read: Optional[str] = Field(default=None)  # the label text as read; None if the check failed
     status: str = Field(default="draft")  # "draft" | "approved" | "archived"
     cost_usd: Decimal = Field(default=Decimal("0"), sa_column=Column(Numeric(10, 4), nullable=False))
     created_at: datetime = Field(default_factory=utcnow)
@@ -66,8 +69,9 @@ class Asset(SQLModel, table=True):
 @event.listens_for(Asset, "before_insert")
 @event.listens_for(Asset, "before_update")
 def _block_approval_while_placeholders_remain(mapper, connection, asset: Asset) -> None:
-    # Runs on every flush, so no code path can save an approved asset with unfilled placeholders.
+    # Runs on every flush, so no code path can save an approved asset with unfilled placeholders
+    # or a label that failed its check.
     if asset.status == "approved":
-        remaining = find_placeholders(asset_texts(asset.caption, asset.alt_text, asset.faq))
+        remaining = needs_input(asset.caption, asset.alt_text, asset.faq, asset.label_ok)
         if remaining:
             raise PlaceholdersRemainError(remaining)

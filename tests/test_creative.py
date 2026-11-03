@@ -697,11 +697,41 @@ PHOTO_REQUEST = REQUEST.model_copy(update={"product_photo_path": "f51db36f3c0844
 
 
 def test_product_label_uses_the_wording_that_passed_the_visual_test():
-    assert creative.with_product_label("Studio photo of the bottle.", "J’aduné") == (
+    assert creative.with_product_label("Studio photo of the bottle.", "J’aduné", "studio_hero") == (
         "Studio photo of the bottle. The product label reads exactly «J’aduné» with the apostrophe. "
         "Keep all label text exactly as in the reference photo; do not change or invent any text. "
         "Do not add objects beyond those described in this prompt."
     )
+
+
+@pytest.mark.parametrize("format", ["ugc", "model_with_product"])
+def test_people_formats_require_a_big_front_facing_label(format):
+    prompt = creative.with_product_label("Photo of a woman holding the bottle.", "J’aduné", format)
+
+    assert prompt.startswith(
+        "Photo of a woman holding the bottle. The product faces the camera with its label fully visible "
+        "and readable, and fills at least 25% of the frame. The product label reads exactly «J’aduné»"
+    )
+
+
+@pytest.mark.parametrize("format", ["lifestyle", "studio_hero", "flat_lay", "problem_solution", "seasonal"])
+def test_other_formats_keep_their_own_framing(format):
+    assert creative.LABEL_FACING_RULE not in creative.with_product_label("Photo of the bottle.", "J’aduné", format)
+
+
+def test_planner_is_told_people_formats_need_a_readable_label():
+    prompt = creative.build_prompt(PHOTO_REQUEST, "")
+
+    assert "In ugc and model_with_product, the product faces the camera" in prompt
+    assert "fills at least 25% of the frame" in prompt
+
+
+def test_props_rule_bans_lookalike_containers_and_encourages_mood_props():
+    prompt = creative.build_prompt(REQUEST, "")
+
+    assert "Never include unbranded product containers" in prompt
+    assert "mistaken for other products from this brand" in prompt
+    assert "candles, flowers, mirrors and fabrics are encouraged in lifestyle" in prompt
 
 
 def test_planner_is_told_about_the_reference_photo_only_when_there_is_one():

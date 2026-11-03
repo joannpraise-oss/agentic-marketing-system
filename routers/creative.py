@@ -7,12 +7,12 @@ from typing import Callable
 from fastapi import APIRouter, Depends, File, UploadFile
 from sqlmodel import Session
 
-from core.placeholders import asset_texts, find_placeholders
+from core.placeholders import needs_input
 from core.spend import check_spend_caps
 from db.database import get_session
 from db.models import Asset
 from schemas.creative import CreativeRequest
-from services import creative, higgsfield, product_photo, storage
+from services import creative, higgsfield, label_check, product_photo, storage
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -48,6 +48,13 @@ def _product_image_generator(photo_path: str) -> Callable[[str], higgsfield.Gene
     return lambda prompt: higgsfield.generate_product_image(prompt, reference_url)
 
 
+def _check_labels(images: list[higgsfield.GeneratedImage], brand_name: str) -> list[label_check.LabelCheck]:
+    if not images:
+        return []
+    with ThreadPoolExecutor(max_workers=len(images)) as pool:
+        return list(pool.map(lambda image: label_check.check_label(image.data, image.content_type, brand_name), images))
+
+
 # Plain `def` (not async): every step blocks, so FastAPI runs this in its threadpool.
 @router.post("/creative/generate")
 def generate_creatives(data: CreativeRequest, session: Session = Depends(get_session)):
@@ -55,14 +62,15 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
     image_cost = higgsfield.estimate_product_image_cost() if has_photo else higgsfield.estimate_cost()
     # Nothing is spent before this check: planning is covered by a reserve, images by the estimate.
     count = creative.creative_count(data)
-    check_spend_caps(session, image_cost * count + creative.PLANNING_RESERVE_USD)
+    check_cost = label_check.RESERVE_USD if has_photo else Decimal("0")
+    check_spend_caps(session, (image_cost + check_cost) * count + creative.PLANNING_RESERVE_USD)
 
     # Signed before planning, so a bad photo path costs nothing.
     generate = _product_image_generator(data.product_photo_path) if has_photo else higgsfield.generate_image
     plan, planning_cost = creative.plan_creatives(data)
     if has_photo:
         for item in plan.items:  # changed here, so the saved asset keeps the prompt actually sent
-            item.prompt = creative.with_product_label(item.prompt, data.brand.brand_name)
+            item.prompt = creative.with_product_label(item.prompt, data.brand.brand_name, item.format)
     test_group_id = uuid.uuid4().hex if data.creative_test else None
     test_mode = ("varied_format" if data.vary_format else "fixed_format") if data.creative_test else None
 
@@ -90,8 +98,9 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
     # Planning cost is split evenly across the assets we save.
     paid = [o for o in outcomes if o[1] is not None]
     planning_share = planning_cost / len(paid) if paid else Decimal("0")
+    checks = _check_labels([o[1] for o in paid], data.brand.brand_name) if has_photo else [None] * len(paid)
     assets = []
-    for item, image, url, _ in paid:
+    for (item, image, url, _), check in zip(paid, checks):
         asset = Asset(
             campaign_brief=data.brief,
             kind="image",
@@ -112,8 +121,12 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
             test_group_id=test_group_id,
             test_mode=test_mode,
             core_message=item.core_message,
+            label_ok=check.ok if check else None,
+            label_read=check.text_read if check else None,
             status="draft",
-            cost_usd=(image_cost + planning_share).quantize(COST_PRECISION, rounding=ROUND_HALF_UP),
+            cost_usd=(image_cost + planning_share + (check.cost_usd if check else Decimal("0"))).quantize(
+                COST_PRECISION, rounding=ROUND_HALF_UP
+            ),
         )
         session.add(asset)
         assets.append(asset)
@@ -160,7 +173,7 @@ def _asset_out(asset: Asset) -> dict:
     # needs_input is derived from the text, so it can never disagree with what's in the asset.
     return {
         **asset.model_dump(mode="json"),
-        "needs_input": find_placeholders(asset_texts(asset.caption, asset.alt_text, asset.faq)),
+        "needs_input": needs_input(asset.caption, asset.alt_text, asset.faq, asset.label_ok),
     }
 
 

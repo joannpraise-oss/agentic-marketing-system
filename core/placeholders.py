@@ -3,6 +3,8 @@ from typing import Any, Iterable
 
 # A brand-specific fact the brief didn't give us, e.g. "[▢ return window, e.g. 30 days]".
 PLACEHOLDER_RE = re.compile(r"\[▢[^\[\]]*\]")
+# needs_input entry for an image whose label doesn't show brand_name (or couldn't be read).
+LABEL_MISMATCH = "label_mismatch"
 
 
 class PlaceholdersRemainError(Exception):
@@ -21,6 +23,15 @@ def find_placeholders(texts: Iterable[str | None]) -> list[str]:
             if match not in found:
                 found.append(match)
     return found
+
+
+def needs_input(caption: str | None, alt_text: str | None, faq: Any, label_ok: bool | None) -> list[str]:
+    """What blocks approval: unfilled placeholders, plus label_mismatch when the label check failed.
+
+    label_ok is None when no check ran (no product photo, so no label to match).
+    """
+    found = find_placeholders(asset_texts(caption, alt_text, faq))
+    return found + [LABEL_MISMATCH] if label_ok is False else found
 
 
 def asset_texts(caption: str | None, alt_text: str | None, faq: Any) -> list[str | None]:

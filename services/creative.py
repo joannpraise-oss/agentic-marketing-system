@@ -275,10 +275,20 @@ def planning_cost(prompt_tokens: int, completion_tokens: int) -> Decimal:
     ) / Decimal(1_000_000)
 
 
-def with_product_label(prompt: str, brand_name: str) -> str:
+# Formats where a person holds or uses the product: in the live run, a small, angled or
+# held bottle garbled its label, so these prompts require a big, front-facing label.
+PEOPLE_FORMATS = ("ugc", "model_with_product")
+LABEL_FACING_RULE = (
+    "The product faces the camera with its label fully visible and readable, "
+    "and fills at least 25% of the frame."
+)
+
+
+def with_product_label(prompt: str, brand_name: str, format: str) -> str:
     """Image prompt for a run with a product photo: the model must copy the label, not reinvent it."""
+    facing = f" {LABEL_FACING_RULE}" if format in PEOPLE_FORMATS else ""
     return (
-        f"{prompt} The product label reads exactly «{brand_name}» with the apostrophe. Keep all label text "
+        f"{prompt}{facing} The product label reads exactly «{brand_name}» with the apostrophe. Keep all label text "
         "exactly as in the reference photo; do not change or invent any text. "
         "Do not add objects beyond those described in this prompt."
     )
@@ -295,6 +305,8 @@ def _product_photo_section(request: CreativeRequest) -> str:
         "(e.g. \"the bottle\") and do not redesign it: no new shape, colors, packaging or label.\n"
         "The product's own label and logo stay as in the photo; the no-logos/no-words rule below\n"
         "is about adding anything else.\n"
+        "In ugc and model_with_product, the product faces the camera with its label fully visible\n"
+        "and readable, and fills at least 25% of the frame: never small, angled away or hidden by a hand.\n"
     )
 
 
@@ -305,6 +317,10 @@ def _props_rule(request: CreativeRequest) -> str:
         "- Props are allowed only when you deliberately choose them to fit the format, brand and\n"
         "  audience, and name them in the image prompt. Never add props that imply ingredients,\n"
         "  results or features not stated in the brief. The product stays the focal point.\n"
+        "- Never include unbranded product containers (bottles, jars, tubes, pumps, droppers,\n"
+        "  compacts) that could be mistaken for other products from this brand.\n"
+        "- Mood props such as candles, flowers, mirrors and fabrics are encouraged in lifestyle\n"
+        "  and luxury-styled scenes.\n"
     )
 
 

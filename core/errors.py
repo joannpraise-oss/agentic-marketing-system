@@ -89,7 +89,8 @@ def register_error_handlers(app: FastAPI) -> None:
     async def placeholders_remain(request: Request, exc: PlaceholdersRemainError):
         return error_response(
             request, 409, "needs_input",
-            "Fill in every [▢ ...] placeholder before approving this asset.",
+            "Resolve everything in needs_input before approving this asset: fill in every [▢ ...] "
+            "placeholder, and regenerate an image flagged label_mismatch.",
             needs_input=exc.placeholders,
         )
 

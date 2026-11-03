@@ -5,8 +5,9 @@ from types import SimpleNamespace
 import pytest
 from sqlmodel import Session, select
 
+from core.placeholders import PlaceholdersRemainError
 from db.models import Asset
-from services import creative, higgsfield, storage
+from services import creative, higgsfield, label_check, storage
 from tests.test_asset_model import make_asset
 from tests.test_creative import make_item, make_plan
 
@@ -144,8 +145,20 @@ LABEL = (
 
 @pytest.fixture
 def photo_mocks(monkeypatch, mocks):
-    """Adds the signed URL and Marketing Studio to `mocks`; records (prompt, reference_url) calls."""
-    mocks.product_calls, mocks.signed = [], []
+    """Adds the signed URL, Marketing Studio and the label check to `mocks`.
+
+    Records (prompt, reference_url) and label-check calls. Put an image key in `label_bad` to fail its check.
+    """
+    mocks.product_calls, mocks.signed, mocks.label_checks, mocks.label_bad = [], [], [], set()
+
+    def check_label(image, content_type, brand_name):
+        key = image.decode().removeprefix("img:")
+        mocks.label_checks.append((key, brand_name))
+        if key in mocks.label_bad:
+            return label_check.LabelCheck(ok=False, text_read="TADUNE", cost_usd=Decimal("0.004"))
+        return label_check.LabelCheck(ok=True, text_read="J'ADUNÉ", cost_usd=Decimal("0.004"))
+
+    monkeypatch.setattr(label_check, "check_label", check_label)
 
     def create_signed_url(bucket, path):
         mocks.signed.append((bucket, path))
@@ -153,7 +166,7 @@ def photo_mocks(monkeypatch, mocks):
 
     def generate_product_image(prompt, reference_url):
         mocks.product_calls.append((prompt, reference_url))
-        key = prompt.removesuffix(LABEL).split()[-1]
+        key = prompt.split(" The product")[0].split()[-1]
         return higgsfield.GeneratedImage(data=f"img:{key}".encode(), content_type="image/png", request_id=f"r-{key}")
 
     monkeypatch.setattr(storage, "create_signed_url", create_signed_url)
@@ -177,8 +190,52 @@ def test_photo_run_uses_marketing_studio_with_the_signed_url_and_label(client, e
     for asset in assets:
         assert asset.model == "marketing-studio/image"
         assert asset.provider == "higgsfield"
-        # $0.035 image + $0.00105 / 3 planning = $0.03535, rounded to 4 places
-        assert asset.cost_usd == Decimal("0.0354")
+        # $0.035 image + $0.004 label check + $0.00105 / 3 planning = $0.03935, rounded to 4 places
+        assert asset.cost_usd == Decimal("0.0394")
+
+
+def test_only_people_formats_get_the_label_facing_rule(client, photo_mocks):
+    client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
+
+    by_key = {prompt.split(" The product")[0].split()[-1]: creative.LABEL_FACING_RULE in prompt
+              for prompt, _ in photo_mocks.product_calls}
+    assert by_key == {"track": True, "beach": False, "city": False}  # ugc, lifestyle, flat_lay
+
+
+def test_every_photo_image_gets_a_label_check_against_brand_name(client, engine, photo_mocks):
+    photo_mocks.label_bad = {"beach"}
+
+    body = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO}).json()["assets"]
+
+    assert sorted(photo_mocks.label_checks) == [("beach", "Acme"), ("city", "Acme"), ("track", "Acme")]
+    assert [a["needs_input"] for a in body] == [[], ["label_mismatch"], []]
+    assert [a["label_ok"] for a in body] == [True, False, True]
+    assert body[1]["label_read"] == "TADUNE"
+    assert [(a.label_ok, a.label_read) for a in saved_assets(engine)] == [
+        (True, "J'ADUNÉ"), (False, "TADUNE"), (True, "J'ADUNÉ"),
+    ]
+
+
+def test_label_mismatch_blocks_approval(client, engine, photo_mocks):
+    photo_mocks.label_bad = {"track"}
+    client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
+
+    with Session(engine) as session:
+        flagged, fine, _ = session.exec(select(Asset).order_by(Asset.id)).all()
+        fine.status = "approved"
+        session.commit()
+        flagged.status = "approved"
+        with pytest.raises(PlaceholdersRemainError) as info:
+            session.commit()
+    assert info.value.placeholders == ["label_mismatch"]
+
+
+def test_runs_without_a_photo_skip_the_label_check(client, engine, photo_mocks):
+    body = client.post("/creative/generate", json=PAYLOAD).json()["assets"]
+
+    assert photo_mocks.label_checks == []
+    assert [a["label_ok"] for a in body] == [None, None, None]
+    assert [a["needs_input"] for a in body] == [[], [], []]
 
 
 def test_signed_url_is_never_returned_or_saved(client, engine, photo_mocks):
@@ -200,7 +257,8 @@ def test_run_without_a_photo_stays_on_soul_with_no_label_text(client, engine, ph
 
 def test_spend_estimate_uses_the_higher_price_only_with_a_photo(client, engine, photo_mocks):
     with Session(engine) as session:
-        session.add(make_asset(cost_usd=Decimal("4.92")))  # + $0.115 with a photo > 5.00; + $0.028 without
+        # + $0.13 with a photo (3 x ($0.035 image + $0.005 check) + reserve) > 5.00; + $0.028 without
+        session.add(make_asset(cost_usd=Decimal("4.92")))
         session.commit()
 
     resp = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
