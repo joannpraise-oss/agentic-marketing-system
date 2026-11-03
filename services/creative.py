@@ -278,8 +278,33 @@ def planning_cost(prompt_tokens: int, completion_tokens: int) -> Decimal:
 def with_product_label(prompt: str, brand_name: str) -> str:
     """Image prompt for a run with a product photo: the model must copy the label, not reinvent it."""
     return (
-        f"{prompt} The product label reads exactly «{brand_name}». Keep all label text exactly as in the "
-        "reference photo; do not change or invent any text. No added props unless the format calls for them."
+        f"{prompt} The product label reads exactly «{brand_name}» with the apostrophe. Keep all label text "
+        "exactly as in the reference photo; do not change or invent any text. "
+        "Do not add objects beyond those described in this prompt."
+    )
+
+
+def _product_photo_section(request: CreativeRequest) -> str:
+    if request.product_photo_path is None:
+        return ""
+    return (
+        "\nPRODUCT PHOTO:\n"
+        "A reference photo of the real product goes to the image model with every prompt, and the\n"
+        "model copies the product from it. Each prompt describes the scene: setting, lighting,\n"
+        "composition, people, props and the product's placement. Refer to the product plainly\n"
+        "(e.g. \"the bottle\") and do not redesign it: no new shape, colors, packaging or label.\n"
+        "The product's own label and logo stay as in the photo; the no-logos/no-words rule below\n"
+        "is about adding anything else.\n"
+    )
+
+
+def _props_rule(request: CreativeRequest) -> str:
+    if request.offer_type != "physical_product":
+        return ""
+    return (
+        "- Props are allowed only when you deliberately choose them to fit the format, brand and\n"
+        "  audience, and name them in the image prompt. Never add props that imply ingredients,\n"
+        "  results or features not stated in the brief. The product stays the focal point.\n"
     )
 
 
@@ -475,7 +500,7 @@ CONTEXT:
 - Goal: {goal}
 - Platform: {platform}
 {trends}{strategy}
-{offer_type_guidance(request)}
+{offer_type_guidance(request)}{_product_photo_section(request)}
 {_source_text_section(request)}{_on_image_text_section(request)}
 ANALYZE (before choosing any image):
 1. What is this product, in one plain sentence a stranger would understand?
@@ -513,7 +538,7 @@ RULES:
 - Square 1:1 composition.
 - No logos or watermarks in the image. No words in the image, except the exact
   on_image_text when ON-IMAGE TEXT says RENDERED.
-- No placeholders in on_image_text, ever.
+{_props_rule(request)}- No placeholders in on_image_text, ever.
 - People must be fictional. Never depict a real or recognizable person.
 - Captions must not read as a real customer testimonial (no names, no "I've
   used this for 3 weeks"). Speak as the brand.

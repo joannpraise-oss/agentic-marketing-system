@@ -130,8 +130,8 @@ def test_product_image_failure_never_logs_the_signed_url(fake, caplog):
     assert "SECRET-TOKEN" not in caplog.text and "SECRET-TOKEN" not in str(exc.value)
 
 
-def test_product_image_cost_is_the_low_quality_price(fake):
-    assert higgsfield.estimate_product_image_cost() == Decimal("0.030")
+def test_product_image_cost_covers_long_prompts(fake):
+    assert higgsfield.estimate_product_image_cost() == Decimal("0.035")
     assert fake.calls == []
 
 

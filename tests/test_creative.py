@@ -691,3 +691,38 @@ def test_plain_angles_prompt_is_not_a_creative_test():
 def test_spec_carries_creative_test_settings():
     spec = creative.PlanSpec.from_request(ab_request(creative_test=True, angles=["a", "b"], test_format="ugc"))
     assert (spec.creative_test, spec.test_format, spec.vary_format, spec.single_format_test) == (True, "ugc", False, True)
+
+
+PHOTO_REQUEST = REQUEST.model_copy(update={"product_photo_path": "f51db36f3c08442daae2a6325a563aac.jpg"})
+
+
+def test_product_label_uses_the_wording_that_passed_the_visual_test():
+    assert creative.with_product_label("Studio photo of the bottle.", "J’aduné") == (
+        "Studio photo of the bottle. The product label reads exactly «J’aduné» with the apostrophe. "
+        "Keep all label text exactly as in the reference photo; do not change or invent any text. "
+        "Do not add objects beyond those described in this prompt."
+    )
+
+
+def test_planner_is_told_about_the_reference_photo_only_when_there_is_one():
+    with_photo = creative.build_prompt(PHOTO_REQUEST, "")
+
+    assert "PRODUCT PHOTO:" in with_photo
+    assert "describes the scene" in with_photo and "do not redesign it" in with_photo
+    assert "PRODUCT PHOTO:" not in creative.build_prompt(REQUEST, "")
+
+
+@pytest.mark.parametrize("request_", [REQUEST, PHOTO_REQUEST])
+def test_physical_product_prompts_get_the_props_rule(request_):
+    prompt = creative.build_prompt(request_, "")
+
+    assert "Props are allowed only when you deliberately choose them" in prompt
+    assert "Never add props that imply ingredients,\n  results or features not stated in the brief." in prompt
+    assert "The product stays the focal point." in prompt
+    assert "No added props" not in prompt
+
+
+def test_props_rule_is_left_out_when_there_is_no_product():
+    prompt = creative.build_prompt(REQUEST.model_copy(update={"offer_type": "content"}), "")
+
+    assert "Props are allowed only" not in prompt

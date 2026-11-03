@@ -87,9 +87,9 @@ def estimate_cost() -> Decimal:
 
 def estimate_product_image_cost() -> Decimal:
     """USD cost of one image with PRODUCT_IMAGE_PARAMS and one reference image."""
-    # From a live POST /estimate/marketing-studio/image check on 2026-10-30 with a short prompt.
-    # The price grows with prompt length: about $0.031 at 250 characters, $0.035 at 1050.
-    return Decimal("0.030")
+    # Live POST /estimate/marketing-studio/image checks on 2026-10-30: the price grows with prompt
+    # length, from $0.030 (short) to $0.035 (1050 characters), so this covers typical planner prompts.
+    return Decimal("0.035")
 
 
 def _cancel_quietly(request_id: str) -> None:

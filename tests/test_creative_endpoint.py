@@ -137,8 +137,8 @@ def test_spend_cap_blocks_before_any_spend(client, engine, mocks):
 PHOTO = "f51db36f3c08442daae2a6325a563aac.jpg"
 SIGNED = f"https://proj.supabase.co/storage/v1/object/sign/product-photos/{PHOTO}?token=SECRET-TOKEN"
 LABEL = (
-    " The product label reads exactly «Acme». Keep all label text exactly as in the reference photo; "
-    "do not change or invent any text. No added props unless the format calls for them."
+    " The product label reads exactly «Acme» with the apostrophe. Keep all label text exactly as in the "
+    "reference photo; do not change or invent any text. Do not add objects beyond those described in this prompt."
 )
 
 
@@ -177,8 +177,8 @@ def test_photo_run_uses_marketing_studio_with_the_signed_url_and_label(client, e
     for asset in assets:
         assert asset.model == "marketing-studio/image"
         assert asset.provider == "higgsfield"
-        # $0.030 image + $0.00105 / 3 planning = $0.03035, rounded to 4 places
-        assert asset.cost_usd == Decimal("0.0304")
+        # $0.035 image + $0.00105 / 3 planning = $0.03535, rounded to 4 places
+        assert asset.cost_usd == Decimal("0.0354")
 
 
 def test_signed_url_is_never_returned_or_saved(client, engine, photo_mocks):
@@ -200,7 +200,7 @@ def test_run_without_a_photo_stays_on_soul_with_no_label_text(client, engine, ph
 
 def test_spend_estimate_uses_the_higher_price_only_with_a_photo(client, engine, photo_mocks):
     with Session(engine) as session:
-        session.add(make_asset(cost_usd=Decimal("4.92")))  # + $0.10 with a photo > 5.00; + $0.028 without
+        session.add(make_asset(cost_usd=Decimal("4.92")))  # + $0.115 with a photo > 5.00; + $0.028 without
         session.commit()
 
     resp = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
