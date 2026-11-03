@@ -38,9 +38,11 @@ insensitive), and flag mismatches so the asset can't be approved as-is.
 
 `services/label_check.py` reads the label off the uploaded photo once (saved as
 `labels/<photo>.txt` in the private bucket) and compares every word of each
-generated image's label with it, plus `brand_name`. Not covered yet:
+generated image's label with it, plus `brand_name`. A read that disagrees is
+retried once, and the image is flagged only if both reads disagree; both reads
+go in `asset.label_read`. Not covered yet:
 
-- The reader can misread small text, on the generated image or on the
+- The reader can still misread twice, on the generated image or on the
   reference photo itself, so a correct image can be flagged. There's no way to
   override a flag after a person has checked the image, or to correct a
   misread reference; today the fix is to regenerate, or upload a sharper photo.

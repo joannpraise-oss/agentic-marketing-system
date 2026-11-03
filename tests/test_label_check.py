@@ -30,11 +30,20 @@ def test_multi_word_brand_must_appear_in_order():
 
 @pytest.fixture
 def vision(monkeypatch):
-    """Fake vision model: set `text` to what it reads, or `error` to make the call fail."""
-    state = SimpleNamespace(calls=[], text="JB\nJ'ADUNÉ\nBEAUTY", error=None)
+    """Fake vision model: set `text` to what it reads, or `error` to make the call fail.
+
+    `texts` (one per call, None for a failed call) overrides `text` while it lasts.
+    """
+    state = SimpleNamespace(calls=[], text="JB\nJ'ADUNÉ\nBEAUTY", error=None, texts=[])
 
     def create_with_completion(**kwargs):
         state.calls.append(kwargs)
+        if state.texts:
+            text = state.texts.pop(0)
+            if text is None:
+                raise RuntimeError("vision down")
+            usage = SimpleNamespace(prompt_tokens=25_000, completion_tokens=20)
+            return label_check.LabelReading(label_text=text), SimpleNamespace(usage=usage)
         if state.error:
             raise state.error
         usage = SimpleNamespace(prompt_tokens=25_000, completion_tokens=20)
@@ -66,12 +75,61 @@ def test_mismatch_is_not_ok_and_keeps_what_was_read(vision):
     assert not result.ok and result.text_read == "JB\nTADUNE"
 
 
+# --- the second read ---
+
+def test_a_passing_first_read_is_not_repeated(vision):
+    result = label_check.check_label(b"png", "image/png", "J’aduné")
+
+    assert result.ok and len(vision.calls) == 1
+    assert not result.read_twice and result.reads_logged == "JB\nJ'ADUNÉ\nBEAUTY"
+
+
+def test_a_misread_rescued_by_the_second_read_passes(vision):
+    vision.texts = ["JB\nJADUNÉ\nBEAUTY", "JB\nJ'ADUNÉ\nBEAUTY"]  # live: #27's apostrophe dropped once
+
+    result = label_check.check_label(b"png", "image/png", "J’aduné")
+
+    assert result.ok and result.mismatched == [] and len(vision.calls) == 2
+    assert result.reads_logged == "JB\nJADUNÉ\nBEAUTY\n--- second read ---\nJB\nJ'ADUNÉ\nBEAUTY"
+    assert result.cost_usd == 2 * Decimal("0.003762")  # both reads are paid for
+
+
+def test_flagged_only_when_both_reads_disagree(vision):
+    reference = "JB J’aduné BEAUTY PEPTIDE INFUSED"
+    vision.texts = ["JB\nJ'ADUNÉ\nBEAUTY\nPEPTIDE-INFUSED", "JB J'ADUNÉ BEAUTY PEPTIDE-INFUSED"]
+
+    result = label_check.check_label(b"png", "image/png", "J’aduné", reference)
+
+    assert not result.ok
+    assert result.mismatched == ["missing: infused", "missing: peptide", "extra: peptide-infused"]
+    assert result.text_read == "JB\nJ'ADUNÉ\nBEAUTY\nPEPTIDE-INFUSED"
+    assert result.second_read == "JB J'ADUNÉ BEAUTY PEPTIDE-INFUSED"
+
+
+def test_a_failed_first_read_is_retried(vision):
+    vision.texts = [None, "J'ADUNÉ"]
+
+    result = label_check.check_label(b"png", "image/png", "J’aduné")
+
+    assert result.ok and result.reads_logged == "(read failed)\n--- second read ---\nJ'ADUNÉ"
+
+
+def test_a_failed_second_read_keeps_the_flag_and_the_first_reads_differences(vision):
+    vision.texts = ["TADUNE", None]
+
+    result = label_check.check_label(b"png", "image/png", "J’aduné")
+
+    assert not result.ok and result.mismatched == ["brand: expected 'J’aduné'"]
+    assert result.reads_logged == "TADUNE\n--- second read ---\n(read failed)"
+
+
 def test_a_failed_check_flags_the_image_instead_of_raising(vision):
     vision.error = RuntimeError("vision down")
 
     result = label_check.check_label(b"png", "image/png", "J’aduné")
 
-    assert result == label_check.LabelCheck(ok=False, text_read=None, cost_usd=Decimal("0"))
+    assert result == label_check.LabelCheck(ok=False, text_read=None, cost_usd=Decimal("0"), read_twice=True)
+    assert len(vision.calls) == 2 and result.reads_logged is None
 
 
 @pytest.mark.parametrize("label_ok, expected", [(None, []), (True, []), (False, ["label_mismatch"])])

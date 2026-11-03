@@ -60,7 +60,7 @@ class Asset(SQLModel, table=True):
     core_message: Optional[str] = Field(default=None)
     # Product-photo runs: did the generated label show brand_name? None = not checked (no photo).
     label_ok: Optional[bool] = Field(default=None)
-    label_read: Optional[str] = Field(default=None)  # the label text as read; None if the check failed
+    label_read: Optional[str] = Field(default=None)  # the label as read (both reads if it was read twice); None if every read failed
     status: str = Field(default="draft")  # "draft" | "approved" | "archived"
     cost_usd: Decimal = Field(default=Decimal("0"), sa_column=Column(Numeric(10, 4), nullable=False))
     created_at: datetime = Field(default_factory=utcnow)

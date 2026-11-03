@@ -84,9 +84,9 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
     image_cost = higgsfield.estimate_product_image_cost() if has_photo else higgsfield.estimate_cost()
     # Nothing is spent before this check: planning is covered by a reserve, images by the estimate.
     count = creative.creative_count(data)
-    check_cost = label_check.RESERVE_USD if has_photo else Decimal("0")
-    # With a photo: one label check per image, plus one read of the photo itself if it was never read.
-    check_spend_caps(session, (image_cost + check_cost) * count + check_cost + creative.PLANNING_RESERVE_USD)
+    read_cost = label_check.RESERVE_USD if has_photo else Decimal("0")
+    # With a photo: up to two label reads per image, plus one read of the photo itself if it was never read.
+    check_spend_caps(session, (image_cost + 2 * read_cost) * count + read_cost + creative.PLANNING_RESERVE_USD)
 
     # Signed before planning, so a bad photo path costs nothing.
     generate = _product_image_generator(data.product_photo_path) if has_photo else higgsfield.generate_image
@@ -149,7 +149,7 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
             test_mode=test_mode,
             core_message=item.core_message,
             label_ok=check.ok if check else None,
-            label_read=check.text_read if check else None,
+            label_read=check.reads_logged if check else None,
             status="draft",
             cost_usd=(image_cost + planning_share + (check.cost_usd if check else Decimal("0"))).quantize(
                 COST_PRECISION, rounding=ROUND_HALF_UP

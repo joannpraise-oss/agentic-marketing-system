@@ -239,6 +239,20 @@ def test_every_photo_image_gets_a_label_check_against_brand_name(client, engine,
     ]
 
 
+def test_both_reads_are_logged_on_the_asset(client, engine, monkeypatch, photo_mocks):
+    def check_label(image, content_type, brand_name, reference=None):
+        return label_check.LabelCheck(ok=True, text_read="JADUNÉ", cost_usd=Decimal("0.008"),
+                                       read_twice=True, second_read="J'ADUNÉ")
+
+    monkeypatch.setattr(label_check, "check_label", check_label)
+
+    body = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO}).json()["assets"]
+
+    logged = "JADUNÉ\n--- second read ---\nJ'ADUNÉ"
+    assert [(a["label_ok"], a["label_read"]) for a in body] == [(True, logged)] * 3
+    assert {a.label_read for a in saved_assets(engine)} == {logged}
+
+
 def test_label_mismatch_blocks_approval(client, engine, photo_mocks):
     photo_mocks.label_bad = {"track"}
     client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
@@ -280,7 +294,7 @@ def test_run_without_a_photo_stays_on_soul_with_no_label_text(client, engine, ph
 
 def test_spend_estimate_uses_the_higher_price_only_with_a_photo(client, engine, photo_mocks):
     with Session(engine) as session:
-        # + $0.13 with a photo (3 x ($0.035 image + $0.005 check) + reserve) > 5.00; + $0.028 without
+        # + $0.14 with a photo (3 x ($0.035 image + 2 x $0.005 reads) + reserve) > 5.00; + $0.028 without
         session.add(make_asset(cost_usd=Decimal("4.92")))
         session.commit()
 

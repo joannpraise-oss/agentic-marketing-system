@@ -42,6 +42,20 @@ class LabelCheck:
     text_read: str | None  # None when the read itself failed
     cost_usd: Decimal
     mismatched: list[str] = field(default_factory=list)  # e.g. "missing: peptide", "extra: puré"
+    read_twice: bool = False  # the first read didn't pass, so the image was read again
+    second_read: str | None = None  # None when not taken, or when it failed
+
+    @property
+    def reads_logged(self) -> str | None:
+        """What goes in asset.label_read: the first read, then the second if one was taken."""
+        reads = [self.text_read, self.second_read] if self.read_twice else [self.text_read]
+        if all(r is None for r in reads):
+            return None
+        return SECOND_READ_SEPARATOR.join(FAILED_READ if r is None else r for r in reads)
+
+
+SECOND_READ_SEPARATOR = "\n--- second read ---\n"
+FAILED_READ = "(read failed)"
 
 
 def _tokens(text: str) -> list[str]:
@@ -107,17 +121,31 @@ def read_label(image: bytes, content_type: str) -> tuple[str | None, Decimal]:
     return reading.label_text, creative.planning_cost(usage.prompt_tokens, usage.completion_tokens)
 
 
-def check_label(image: bytes, content_type: str, brand_name: str, reference: str | None = None) -> LabelCheck:
-    """Check a generated image's label: brand_name must be on it, and with a reference, every word must match.
-
-    Never raises: a failed read comes back as not ok, so the asset still needs review.
-    """
-    text, cost = read_label(image, content_type)  # the image is already paid for: flag it, don't lose it
+def _mismatches(text: str | None, brand_name: str, reference: str | None) -> list[str] | None:
+    """What's wrong with one read, [] if it passes; None if the read failed."""
     if text is None:
-        return LabelCheck(ok=False, text_read=None, cost_usd=cost)
+        return None
     mismatched = [] if brand_matches(text, brand_name) else [f"brand: expected {brand_name!r}"]
     if reference:
         mismatched += label_differences(reference, text)
-    if mismatched:
-        logger.info("Label mismatch: read %r; %s", text, mismatched)
-    return LabelCheck(ok=not mismatched, text_read=text, cost_usd=cost, mismatched=mismatched)
+    return mismatched
+
+
+def check_label(image: bytes, content_type: str, brand_name: str, reference: str | None = None) -> LabelCheck:
+    """Check a generated image's label: brand_name must be on it, and with a reference, every word must match.
+
+    The reader misreads small text (it dropped a clearly printed apostrophe), so a read that
+    disagrees, or fails, is retried once, and the image is flagged only if both reads disagree.
+    Never raises: failed reads come back as not ok, so the asset still needs review.
+    """
+    text, cost = read_label(image, content_type)  # the image is already paid for: flag it, don't lose it
+    if _mismatches(text, brand_name, reference) == []:
+        return LabelCheck(ok=True, text_read=text, cost_usd=cost)
+    second, second_cost = read_label(image, content_type)
+    first_wrong, second_wrong = _mismatches(text, brand_name, reference), _mismatches(second, brand_name, reference)
+    ok = second_wrong == []
+    mismatched = [] if ok else (second_wrong or first_wrong or [])
+    if not ok:
+        logger.info("Label mismatch: read %r, then %r; %s", text, second, mismatched)
+    return LabelCheck(ok=ok, text_read=text, cost_usd=cost + second_cost, mismatched=mismatched,
+                      read_twice=True, second_read=second)
