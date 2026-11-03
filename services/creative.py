@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -277,16 +278,46 @@ def planning_cost(prompt_tokens: int, completion_tokens: int) -> Decimal:
 
 # Formats where a person holds or uses the product: in the live run, a small, angled or
 # held bottle garbled its label, so these prompts require a big, front-facing label.
-PEOPLE_FORMATS = ("ugc", "model_with_product")
+LABEL_FACING_FORMATS = ("ugc", "model_with_product")
 LABEL_FACING_RULE = (
     "The product faces the camera with its label fully visible and readable, "
     "and fills at least 25% of the frame."
 )
+# Formats that always show people. lifestyle sometimes does: its prompt is checked for people words.
+PEOPLE_FORMATS = ("ugc", "model_with_product", "before_after", "experience", "narrator")
+PEOPLE_WORDS = re.compile(
+    r"\b(woman|women|man|men|person|people|model|girl|boy|child|children|kids?|couple|friends?|"
+    r"she|he|her|his|face|hands?)\b",
+    re.IGNORECASE,
+)
+# The planner ignored REALISM_RULE in the live run, so this short form goes on the prompt itself.
+REALISM_PROMPT = (
+    "Real photographed human, not AI-perfect: visible pores and fine skin texture, natural unevenness, "
+    "freckles/moles/spots where natural, healthy glow with real shadows and undertones, no airbrushing, "
+    "natural camera grain."
+)
+# A live run showed the person holding one bottle and spraying from a second one.
+ONE_PRODUCT = "Exactly one product in the image."
+ONE_PRODUCT_HELD = "Exactly one product in the image; the person holds and uses the same single product."
+
+
+def shows_people(format: str, prompt: str) -> bool:
+    return format in PEOPLE_FORMATS or (format == "lifestyle" and bool(PEOPLE_WORDS.search(prompt)))
+
+
+def finalize_image_prompt(prompt: str, format: str, offer_type: str, brand_name: str, has_photo: bool) -> str:
+    """The prompt the image model gets: the planner's prompt plus the rules it must not drop."""
+    people = shows_people(format, prompt)
+    if people:
+        prompt = f"{prompt} {REALISM_PROMPT}"
+    if offer_type == "physical_product":
+        prompt = f"{prompt} {ONE_PRODUCT_HELD if people else ONE_PRODUCT}"
+    return with_product_label(prompt, brand_name, format) if has_photo else prompt
 
 
 def with_product_label(prompt: str, brand_name: str, format: str) -> str:
     """Image prompt for a run with a product photo: the model must copy the label, not reinvent it."""
-    facing = f" {LABEL_FACING_RULE}" if format in PEOPLE_FORMATS else ""
+    facing = f" {LABEL_FACING_RULE}" if format in LABEL_FACING_FORMATS else ""
     return (
         f"{prompt}{facing} The product label reads exactly «{brand_name}» with the apostrophe. Keep all label text "
         "exactly as in the reference photo; do not change or invent any text. "

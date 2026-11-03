@@ -776,3 +776,71 @@ def test_props_rule_is_left_out_when_there_is_no_product():
     prompt = creative.build_prompt(REQUEST.model_copy(update={"offer_type": "content"}), "")
 
     assert "Props are allowed only" not in prompt
+
+
+# --- rules appended to every image prompt ---
+
+def finalize(prompt, format, offer_type="physical_product", has_photo=False):
+    return creative.finalize_image_prompt(prompt, format, offer_type, "J’aduné", has_photo)
+
+
+@pytest.mark.parametrize("format", ["ugc", "model_with_product", "before_after", "experience", "narrator"])
+def test_people_formats_get_the_realism_rule(format):
+    assert creative.REALISM_PROMPT in finalize("Photo of the scene.", format, "service")
+
+
+def test_realism_prompt_wording():
+    assert creative.REALISM_PROMPT == (
+        "Real photographed human, not AI-perfect: visible pores and fine skin texture, natural unevenness, "
+        "freckles/moles/spots where natural, healthy glow with real shadows and undertones, no airbrushing, "
+        "natural camera grain."
+    )
+
+
+@pytest.mark.parametrize("prompt, people", [
+    ("Eye-level lifestyle photo of a woman reading by the window.", True),
+    ("Eye-level lifestyle photo of friends at a picnic.", True),
+    ("Eye-level lifestyle photo of the bottle on a vanity with candles.", False),
+])
+def test_lifestyle_gets_the_realism_rule_only_when_it_shows_people(prompt, people):
+    assert (creative.REALISM_PROMPT in finalize(prompt, "lifestyle")) is people
+
+
+@pytest.mark.parametrize("format", ["studio_hero", "flat_lay"])
+def test_product_only_formats_get_no_realism_rule(format):
+    assert creative.REALISM_PROMPT not in finalize("Photo of the bottle.", format)
+
+
+def test_people_with_a_product_get_one_held_product():
+    prompt = finalize("Candid smartphone photo of a woman misting her hair.", "ugc")
+
+    assert "Exactly one product in the image; the person holds and uses the same single product." in prompt
+
+
+def test_product_without_people_gets_exactly_one_product():
+    prompt = finalize("Photo of the bottle on linen.", "studio_hero")
+
+    assert prompt.endswith(" Exactly one product in the image.")
+
+
+def test_other_offer_types_get_no_product_rule():
+    prompt = finalize("Photo of a fictional narrator.", "narrator", "content")
+
+    assert creative.ONE_PRODUCT not in prompt and creative.REALISM_PROMPT in prompt
+
+
+def test_photo_runs_end_with_the_label_rules_after_realism_and_one_product():
+    prompt = finalize("Candid smartphone photo of a woman misting her hair.", "ugc", has_photo=True)
+
+    realism = prompt.index(creative.REALISM_PROMPT)
+    one = prompt.index(creative.ONE_PRODUCT_HELD)
+    facing = prompt.index(creative.LABEL_FACING_RULE)
+    label = prompt.index("The product label reads exactly «J’aduné»")
+    assert realism < one < facing < label
+    assert prompt.endswith("Do not add objects beyond those described in this prompt.")
+
+
+def test_runs_without_a_photo_get_no_label_rules():
+    prompt = finalize("Candid smartphone photo of a woman misting her hair.", "ugc")
+
+    assert "label" not in prompt.lower()

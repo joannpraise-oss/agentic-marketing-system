@@ -48,11 +48,33 @@ def _product_image_generator(photo_path: str) -> Callable[[str], higgsfield.Gene
     return lambda prompt: higgsfield.generate_product_image(prompt, reference_url)
 
 
-def _check_labels(images: list[higgsfield.GeneratedImage], brand_name: str) -> list[label_check.LabelCheck]:
+def _label_reference(photo_path: str) -> tuple[str | None, Decimal]:
+    """The photo's label text and what reading it cost now: saved at upload, or read here once for older photos."""
+    saved = storage.download_label_reference(photo_path)
+    if saved is not None:
+        return saved, Decimal("0")
+    text, cost = label_check.read_label(storage.download_product_photo(photo_path), "image/jpeg")
+    if text:
+        _save_label_reference(photo_path, text)
+    return text, cost
+
+
+def _save_label_reference(photo_path: str, text: str) -> None:
+    try:
+        storage.upload_label_reference(photo_path, text)
+    except storage.StorageError as exc:  # not fatal: the next run reads the photo again
+        logger.warning("Could not save the label reference for %s: %s", photo_path, exc)
+
+
+def _check_labels(
+    images: list[higgsfield.GeneratedImage], brand_name: str, reference: str | None
+) -> list[label_check.LabelCheck]:
     if not images:
         return []
     with ThreadPoolExecutor(max_workers=len(images)) as pool:
-        return list(pool.map(lambda image: label_check.check_label(image.data, image.content_type, brand_name), images))
+        return list(pool.map(
+            lambda image: label_check.check_label(image.data, image.content_type, brand_name, reference), images
+        ))
 
 
 # Plain `def` (not async): every step blocks, so FastAPI runs this in its threadpool.
@@ -63,14 +85,19 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
     # Nothing is spent before this check: planning is covered by a reserve, images by the estimate.
     count = creative.creative_count(data)
     check_cost = label_check.RESERVE_USD if has_photo else Decimal("0")
-    check_spend_caps(session, (image_cost + check_cost) * count + creative.PLANNING_RESERVE_USD)
+    # With a photo: one label check per image, plus one read of the photo itself if it was never read.
+    check_spend_caps(session, (image_cost + check_cost) * count + check_cost + creative.PLANNING_RESERVE_USD)
 
     # Signed before planning, so a bad photo path costs nothing.
     generate = _product_image_generator(data.product_photo_path) if has_photo else higgsfield.generate_image
+    reference, reference_cost = _label_reference(data.product_photo_path) if has_photo else (None, Decimal("0"))
+    if reference:
+        reference = label_check.reference_label(reference, data.brand.brand_name)
     plan, planning_cost = creative.plan_creatives(data)
-    if has_photo:
-        for item in plan.items:  # changed here, so the saved asset keeps the prompt actually sent
-            item.prompt = creative.with_product_label(item.prompt, data.brand.brand_name, item.format)
+    for item in plan.items:  # changed here, so the saved asset keeps the prompt actually sent
+        item.prompt = creative.finalize_image_prompt(
+            item.prompt, item.format, data.offer_type, data.brand.brand_name, has_photo
+        )
     test_group_id = uuid.uuid4().hex if data.creative_test else None
     test_mode = ("varied_format" if data.vary_format else "fixed_format") if data.creative_test else None
 
@@ -97,8 +124,8 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
     # Save every paid image (even one whose upload failed) so the daily cap sees the real spend.
     # Planning cost is split evenly across the assets we save.
     paid = [o for o in outcomes if o[1] is not None]
-    planning_share = planning_cost / len(paid) if paid else Decimal("0")
-    checks = _check_labels([o[1] for o in paid], data.brand.brand_name) if has_photo else [None] * len(paid)
+    planning_share = (planning_cost + reference_cost) / len(paid) if paid else Decimal("0")
+    checks = _check_labels([o[1] for o in paid], data.brand.brand_name, reference) if has_photo else [None] * len(paid)
     assets = []
     for (item, image, url, _), check in zip(paid, checks):
         asset = Asset(
@@ -193,8 +220,13 @@ def upload_product_photo(file: UploadFile = File(...)):
         "Stored product photo %s (%sx%s, %.1f KB, warnings=%s)",
         path, photo.width, photo.height, len(photo.data) / 1024, [w.code for w in photo.warnings],
     )
+    # Read once now; generated images are checked against it. If this fails, generation reads it instead.
+    label_text, _ = label_check.read_label(photo.data, "image/jpeg")
+    if label_text:
+        _save_label_reference(path, label_text)
     return {
         "product_photo_path": path,
+        "label_text": label_text,  # as read; the brand is matched against brand_name at generation
         "width": photo.width,
         "height": photo.height,
         "size_kb": round(len(photo.data) / 1024, 1),

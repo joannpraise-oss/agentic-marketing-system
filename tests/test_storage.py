@@ -343,3 +343,47 @@ def test_private_request_failures_raise_storage_error(monkeypatch, call):
 
     with pytest.raises(storage.StorageError, match="status 404"):
         call("abc.jpg")
+
+
+def test_label_reference_is_saved_next_to_the_photo_as_text(monkeypatch):
+    calls = mock_post(monkeypatch)
+
+    storage.upload_label_reference("abc.jpg", "JB\nJ’ADUNÉ")
+
+    url, kwargs = calls[0]
+    assert url == "https://proj.supabase.co/storage/v1/object/product-photos/labels/abc.txt"
+    assert kwargs["content"] == "JB\nJ’ADUNÉ".encode()
+    assert kwargs["headers"]["Content-Type"] == "text/plain; charset=utf-8"
+
+
+def test_missing_label_reference_reads_as_none(monkeypatch):
+    body = {"statusCode": "404", "error": "not_found", "message": "Object not found"}
+    monkeypatch.setattr(
+        storage.httpx, "request",
+        lambda method, url, **kwargs: httpx.Response(400, json=body, request=httpx.Request(method, url)),
+    )
+
+    assert storage.download_label_reference("abc.jpg") is None
+
+
+def test_saved_label_reference_is_returned(monkeypatch):
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url))
+        return httpx.Response(200, content="JB\nJ’ADUNÉ".encode(), request=httpx.Request(method, url))
+
+    monkeypatch.setattr(storage.httpx, "request", fake_request)
+
+    assert storage.download_label_reference("abc.jpg") == "JB\nJ’ADUNÉ"
+    assert calls == [("GET", "https://proj.supabase.co/storage/v1/object/authenticated/product-photos/labels/abc.txt")]
+
+
+def test_other_label_reference_errors_still_raise(monkeypatch):
+    monkeypatch.setattr(
+        storage.httpx, "request",
+        lambda method, url, **kwargs: httpx.Response(500, json={}, request=httpx.Request(method, url)),
+    )
+
+    with pytest.raises(storage.StorageError):
+        storage.download_label_reference("abc.jpg")

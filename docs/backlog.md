@@ -36,15 +36,16 @@ insensitive), and flag mismatches so the asset can't be approved as-is.
 
 ## Product label check: what's still missing
 
-`services/label_check.py` reads the label off each product-photo image and flags
-`label_mismatch` when `brand_name` isn't on it. Not covered yet:
+`services/label_check.py` reads the label off the uploaded photo once (saved as
+`labels/<photo>.txt` in the private bucket) and compares every word of each
+generated image's label with it, plus `brand_name`. Not covered yet:
 
-- Only the brand name is compared. The rest of the label (e.g. "PEPTIDE
-  INFUSED", the size) is read and stored in `label_read` but not checked
-  against the reference photo.
-- The reader can misread small text too, so a correct image can be flagged.
-  There's no way to override a flag after a person has checked the image;
-  today the fix is to regenerate.
+- The reader can misread small text, on the generated image or on the
+  reference photo itself, so a correct image can be flagged. There's no way to
+  override a flag after a person has checked the image, or to correct a
+  misread reference; today the fix is to regenerate, or upload a sharper photo.
+- Which words mismatched is only logged, not stored on the asset.
+- Reading the photo at upload (~$0.004) isn't counted against the spend caps.
 
 ## Phase 4: report creative test results by the right key
 

@@ -39,7 +39,7 @@ def mocks(monkeypatch):
         return creative.CreativePlan.model_validate(plan.model_dump(), context=kwargs["context"]), SimpleNamespace(usage=usage)
 
     def generate_image(prompt):
-        key = prompt.split()[-1]  # make_item prompts end with a short key: "track", "beach", "city"
+        key = key_of(prompt)
         state.generated.append(key)
         if key in state.fail:
             raise state.fail[key]
@@ -61,6 +61,13 @@ def mocks(monkeypatch):
     monkeypatch.setattr(higgsfield, "generate_image", generate_image)
     monkeypatch.setattr(storage, "upload_asset", upload_asset)
     return state
+
+
+def key_of(prompt):
+    """make_item prompts end with a short key ("track", "beach", "city"); the router appends its rules after it."""
+    for rule in (creative.REALISM_PROMPT, creative.ONE_PRODUCT, creative.LABEL_FACING_RULE, " The product label"):
+        prompt = prompt.split(" " + rule.strip())[0]
+    return prompt.split()[-1]
 
 
 def saved_assets(engine):
@@ -141,6 +148,8 @@ LABEL = (
     " The product label reads exactly «Acme» with the apostrophe. Keep all label text exactly as in the "
     "reference photo; do not change or invent any text. Do not add objects beyond those described in this prompt."
 )
+REFERENCE = "ACMF\nTRAIL RUNNER\nsize 9"  # as read off the photo: brand misread, corrected to "Acme" before checks
+CORRECTED = "Acme TRAIL RUNNER size 9"
 
 
 @pytest.fixture
@@ -148,12 +157,16 @@ def photo_mocks(monkeypatch, mocks):
     """Adds the signed URL, Marketing Studio and the label check to `mocks`.
 
     Records (prompt, reference_url) and label-check calls. Put an image key in `label_bad` to fail its check.
+    `saved_reference` is the label text stored for the photo (None: never read); reads of the photo
+    itself return `photo_label` and are recorded in `photo_reads`, saves in `saved_references`.
     """
     mocks.product_calls, mocks.signed, mocks.label_checks, mocks.label_bad = [], [], [], set()
+    mocks.saved_reference, mocks.photo_label = REFERENCE, REFERENCE
+    mocks.photo_reads, mocks.saved_references = [], []
 
-    def check_label(image, content_type, brand_name):
+    def check_label(image, content_type, brand_name, reference=None):
         key = image.decode().removeprefix("img:")
-        mocks.label_checks.append((key, brand_name))
+        mocks.label_checks.append((key, brand_name, reference))
         if key in mocks.label_bad:
             return label_check.LabelCheck(ok=False, text_read="TADUNE", cost_usd=Decimal("0.004"))
         return label_check.LabelCheck(ok=True, text_read="J'ADUNÉ", cost_usd=Decimal("0.004"))
@@ -166,11 +179,19 @@ def photo_mocks(monkeypatch, mocks):
 
     def generate_product_image(prompt, reference_url):
         mocks.product_calls.append((prompt, reference_url))
-        key = prompt.split(" The product")[0].split()[-1]
+        key = key_of(prompt)
         return higgsfield.GeneratedImage(data=f"img:{key}".encode(), content_type="image/png", request_id=f"r-{key}")
 
+    def read_label(image, content_type):
+        mocks.photo_reads.append(image)
+        return mocks.photo_label, Decimal("0.003")
+
     monkeypatch.setattr(storage, "create_signed_url", create_signed_url)
+    monkeypatch.setattr(storage, "download_label_reference", lambda path: mocks.saved_reference)
+    monkeypatch.setattr(storage, "upload_label_reference", lambda path, text: mocks.saved_references.append((path, text)))
+    monkeypatch.setattr(storage, "download_product_photo", lambda path: b"photo-bytes")
     monkeypatch.setattr(higgsfield, "generate_product_image", generate_product_image)
+    monkeypatch.setattr(label_check, "read_label", read_label)
     return mocks
 
 
@@ -197,7 +218,7 @@ def test_photo_run_uses_marketing_studio_with_the_signed_url_and_label(client, e
 def test_only_people_formats_get_the_label_facing_rule(client, photo_mocks):
     client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
 
-    by_key = {prompt.split(" The product")[0].split()[-1]: creative.LABEL_FACING_RULE in prompt
+    by_key = {key_of(prompt): creative.LABEL_FACING_RULE in prompt
               for prompt, _ in photo_mocks.product_calls}
     assert by_key == {"track": True, "beach": False, "city": False}  # ugc, lifestyle, flat_lay
 
@@ -207,7 +228,9 @@ def test_every_photo_image_gets_a_label_check_against_brand_name(client, engine,
 
     body = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO}).json()["assets"]
 
-    assert sorted(photo_mocks.label_checks) == [("beach", "Acme"), ("city", "Acme"), ("track", "Acme")]
+    assert sorted(photo_mocks.label_checks) == [
+        ("beach", "Acme", CORRECTED), ("city", "Acme", CORRECTED), ("track", "Acme", CORRECTED),
+    ]
     assert [a["needs_input"] for a in body] == [[], ["label_mismatch"], []]
     assert [a["label_ok"] for a in body] == [True, False, True]
     assert body[1]["label_read"] == "TADUNE"
@@ -575,3 +598,42 @@ def test_varied_format_test_is_marked_varied(client, engine, mocks):
     assert [(a.test_mode, a.angle, a.format) for a in assets] == [
         ("varied_format", "moms", "ugc"), ("varied_format", "styling", "lifestyle"),
     ]
+
+
+def test_older_photo_is_read_once_and_its_reference_saved(client, engine, photo_mocks):
+    photo_mocks.saved_reference = None  # uploaded before references existed
+
+    client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
+
+    assert photo_mocks.photo_reads == [b"photo-bytes"]
+    assert photo_mocks.saved_references == [(PHOTO, REFERENCE)]  # saved as read; corrected per run
+    assert {check[2] for check in photo_mocks.label_checks} == {CORRECTED}
+    # $0.035 image + $0.004 check + ($0.00105 planning + $0.003 photo read) / 3 = $0.04035
+    assert {asset.cost_usd for asset in saved_assets(engine)} == {Decimal("0.0404")}
+
+
+def test_saved_reference_means_no_new_read_of_the_photo(client, photo_mocks):
+    client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
+
+    assert photo_mocks.photo_reads == [] and photo_mocks.saved_references == []
+
+
+def test_unreadable_photo_falls_back_to_the_brand_only_check(client, photo_mocks):
+    photo_mocks.saved_reference, photo_mocks.photo_label = None, None
+
+    resp = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
+
+    assert resp.status_code == 200
+    assert photo_mocks.saved_references == []
+    assert {check[2] for check in photo_mocks.label_checks} == {None}
+
+
+def test_every_image_prompt_gets_realism_and_one_product_rules(client, photo_mocks):
+    client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
+
+    prompts = {key_of(prompt): prompt for prompt, _ in photo_mocks.product_calls}
+    # make_plan: ugc "track" (people), lifestyle "beach" and flat_lay "city" (no people words)
+    assert creative.REALISM_PROMPT in prompts["track"] and creative.ONE_PRODUCT_HELD in prompts["track"]
+    for key in ("beach", "city"):
+        assert creative.REALISM_PROMPT not in prompts[key]
+        assert f"{creative.ONE_PRODUCT} The product label" in prompts[key]

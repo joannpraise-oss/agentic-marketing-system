@@ -78,3 +78,71 @@ def test_a_failed_check_flags_the_image_instead_of_raising(vision):
 def test_needs_input_adds_label_mismatch_only_for_a_failed_check(label_ok, expected):
     assert needs_input("Shop now.", None, [], label_ok) == expected
     assert needs_input("Ships in [▢ time, e.g. 2 days].", None, [], label_ok) == ["[▢ time, e.g. 2 days]", *expected]
+
+
+# --- the reference label from the uploaded photo ---
+
+PHOTO_READ = "JB\nTADUNÉ\nBEAUTY\nPEPTIDE INFUSED\nhydrating hair mist\n8 fl oz (237 mL)"  # real read of f51db36…
+
+
+def test_misread_brand_in_the_reference_is_replaced_with_brand_name():
+    assert label_check.reference_label(PHOTO_READ, "J’aduné") == (
+        "JB J’aduné BEAUTY PEPTIDE INFUSED hydrating hair mist 8 fl oz (237 mL)"
+    )
+
+
+def test_reference_with_the_right_brand_is_kept_as_read():
+    assert label_check.reference_label("JB\nJ'ADUNÉ\nBEAUTY", "J’aduné") == "JB\nJ'ADUNÉ\nBEAUTY"
+
+
+def test_reference_without_anything_like_the_brand_is_left_alone():
+    assert label_check.reference_label("PEPTIDE INFUSED\nhair mist", "J’aduné") == "PEPTIDE INFUSED\nhair mist"
+
+
+def test_label_differences_ignore_order_case_punctuation_and_line_breaks():
+    reference = "JB J’aduné BEAUTY PEPTIDE INFUSED hydrating hair mist 8 fl oz (237 mL)"
+    read = "JB\nJ'ADUNÉ\nBEAUTY\nhydrating hair mist\nPEPTIDE INFUSED\n8 fl oz (237 mL)."
+
+    assert label_check.label_differences(reference, read) == []
+
+
+def test_label_differences_name_each_missing_and_invented_word():
+    reference = "JB J’aduné BEAUTY PEPTIDE INFUSED hydrating hair mist 8 fl oz (237 mL)"
+    read = "JB\nJ'ADUNÉ\nBEAUTY\npuré white\nhydrating hair mist\n8 fl oz (237 mL)"  # live misread of #23
+
+    assert label_check.label_differences(reference, read) == [
+        "missing: infused", "missing: peptide", "extra: puré", "extra: white",
+    ]
+
+
+def test_with_a_reference_any_wrong_word_fails_the_check(vision):
+    vision.text = "JB\nJ'ADUNÉ\nBEAUTY\npuré white\nhydrating hair mist\n8 fl oz (237 mL)"
+    reference = "JB J’aduné BEAUTY PEPTIDE INFUSED hydrating hair mist 8 fl oz (237 mL)"
+
+    result = label_check.check_label(b"png", "image/png", "J’aduné", reference)
+
+    assert not result.ok
+    assert result.mismatched == ["missing: infused", "missing: peptide", "extra: puré", "extra: white"]
+
+
+def test_with_a_reference_a_matching_label_passes(vision):
+    vision.text = "JB\nJ'ADUNÉ\nBEAUTY\nPEPTIDE INFUSED\nhydrating hair mist\n8 fl oz (237 mL)"
+    reference = label_check.reference_label(PHOTO_READ, "J’aduné")
+
+    result = label_check.check_label(b"png", "image/png", "J’aduné", reference)
+
+    assert result.ok and result.mismatched == []
+
+
+def test_brand_is_still_checked_against_brand_name_with_a_reference(vision):
+    vision.text = "JB\nTADUNÉ\nBEAUTY"
+
+    result = label_check.check_label(b"png", "image/png", "J’aduné", "JB TADUNÉ BEAUTY")
+
+    assert not result.ok and result.mismatched == ["brand: expected 'J’aduné'"]
+
+
+def test_read_label_returns_none_instead_of_raising(vision):
+    vision.error = RuntimeError("vision down")
+
+    assert label_check.read_label(b"png", "image/png") == (None, Decimal("0"))

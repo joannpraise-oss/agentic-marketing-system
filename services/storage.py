@@ -119,11 +119,30 @@ def _private_request(method: str, bucket: str, path: str, action: str) -> httpx.
             "Storage %s of %s/%s rejected with status %s: %s", action, bucket, path, exc.response.status_code,
             _error_message(exc.response, key) or "no error message",
         )
-        raise StorageError(f"Storage {action} failed with status {exc.response.status_code}.") from None
+        error = StorageObjectNotFound if _is_not_found(exc.response) else StorageError
+        raise error(f"Storage {action} failed with status {exc.response.status_code}.") from None
     except httpx.HTTPError as exc:
         logger.error("Storage %s of %s/%s failed: %s", action, bucket, path, type(exc).__name__)
         raise StorageError(f"Storage {action} failed: network error.") from None
     return response
+
+
+def _label_reference_path(photo_path: str) -> str:
+    return f"labels/{photo_path.removesuffix('.jpg')}.txt"
+
+
+def upload_label_reference(photo_path: str, text: str) -> None:
+    """Save the label text read off a product photo, next to the photo in the private bucket."""
+    _upload(PRODUCT_PHOTO_BUCKET, _label_reference_path(photo_path), text.encode(), "text/plain; charset=utf-8")
+
+
+def download_label_reference(photo_path: str) -> str | None:
+    """The saved label text for a product photo, or None if it was never read."""
+    try:
+        response = _private_request("GET", PRODUCT_PHOTO_BUCKET, _label_reference_path(photo_path), "download")
+    except StorageObjectNotFound:
+        return None
+    return response.content.decode()
 
 
 def create_signed_url(bucket: str, path: str, expires_in: int = SIGNED_URL_SECONDS) -> str:

@@ -1,10 +1,11 @@
 import io
 import os
+from decimal import Decimal
 
 import pytest
 from PIL import Image
 
-from services import product_photo, storage
+from services import label_check, product_photo, storage
 
 
 def image_bytes(size, fmt="PNG", mode="RGB", color=(200, 40, 40), **save_kwargs):
@@ -117,14 +118,47 @@ def test_too_many_pixels_rejected_before_decoding(monkeypatch):
 
 @pytest.fixture
 def stored(monkeypatch):
-    uploads = []
+    """Fakes the photo upload and the label read: a list of uploaded photos.
+
+    `.label` is what the read returns (None: it failed); `.reads` and `.references` record the read and the save.
+    """
+    uploads = Uploads()
+    uploads.label, uploads.reads, uploads.references = "JB\nTADUNÉ\nBEAUTY", [], []
 
     def fake_upload(data, **kwargs):
         uploads.append(data)
         return "abc123.jpg"
 
+    def fake_read(image, content_type):
+        uploads.reads.append((image, content_type))
+        return uploads.label, Decimal("0.004")
+
     monkeypatch.setattr(storage, "upload_product_photo", fake_upload)
+    monkeypatch.setattr(label_check, "read_label", fake_read)
+    monkeypatch.setattr(storage, "upload_label_reference", lambda path, text: uploads.references.append((path, text)))
     return uploads
+
+
+class Uploads(list):
+    pass
+
+
+def test_upload_reads_the_label_once_and_saves_it_as_the_reference(client, stored):
+    resp = post_photo(client, image_bytes((1200, 1000)))
+
+    assert resp.json()["label_text"] == "JB\nTADUNÉ\nBEAUTY"
+    [(image, content_type)] = stored.reads
+    assert image == stored[0] and content_type == "image/jpeg"  # the cleaned JPEG, not the raw upload
+    assert stored.references == [("abc123.jpg", "JB\nTADUNÉ\nBEAUTY")]
+
+
+def test_failed_label_read_still_stores_the_photo(client, stored):
+    stored.label = None
+
+    resp = post_photo(client, image_bytes((1200, 1000)))
+
+    assert resp.status_code == 200 and resp.json()["label_text"] is None
+    assert len(stored) == 1 and stored.references == []
 
 
 def post_photo(client, data, name="photo.png", content_type="image/png"):
