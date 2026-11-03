@@ -319,9 +319,23 @@ def _props_rule(request: CreativeRequest) -> str:
         "  results or features not stated in the brief. The product stays the focal point.\n"
         "- Never include unbranded product containers (bottles, jars, tubes, pumps, droppers,\n"
         "  compacts) that could be mistaken for other products from this brand.\n"
-        "- Mood props such as candles, flowers, mirrors and fabrics are encouraged in lifestyle\n"
-        "  and luxury-styled scenes.\n"
+        "- Mood props like candles, flowers, mirrors and fabrics are encouraged for lifestyle and\n"
+        "  luxury formats.\n"
     )
+
+
+# Formats that show people (lifestyle only sometimes). AI images default to flawless, plastic
+# skin; these prompts must ask for real, photographed people instead.
+REALISM_RULE = """- Realism, in every image prompt that shows people (ugc, model_with_product, lifestyle
+  with people, before_after, experience, narrator): People must look like real, photographed
+  humans, not AI-perfect. Describe natural skin: visible pores and fine texture, subtle
+  unevenness, and where it suits the person, freckles, moles, small spots, faint veins, or
+  piercings. Keep skin healthy and glowing, with real depth: natural shadows, highlights and
+  undertones, and varied skin color within the face. Avoid airbrushed or plastic skin, perfect
+  symmetry, and over-smoothed hair. Vary these details across people and ads; don't give
+  everyone the same features. Lighting should look like a real camera: natural falloff, soft
+  shadows, slight grain where it fits UGC.
+"""
 
 
 def offer_type_guidance(request: CreativeRequest) -> str:
@@ -556,7 +570,7 @@ RULES:
   on_image_text when ON-IMAGE TEXT says RENDERED.
 {_props_rule(request)}- No placeholders in on_image_text, ever.
 - People must be fictional. Never depict a real or recognizable person.
-- Captions must not read as a real customer testimonial (no names, no "I've
+{REALISM_RULE}- Captions must not read as a real customer testimonial (no names, no "I've
   used this for 3 weeks"). Speak as the brand.
 - Classify every claim in the caption and FAQ before writing it:
   * from-brief: stated in the BRIEF or BRAND above. Use it as given.

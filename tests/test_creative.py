@@ -731,7 +731,27 @@ def test_props_rule_bans_lookalike_containers_and_encourages_mood_props():
 
     assert "Never include unbranded product containers" in prompt
     assert "mistaken for other products from this brand" in prompt
-    assert "candles, flowers, mirrors and fabrics are encouraged in lifestyle" in prompt
+    assert "Mood props like candles, flowers, mirrors and fabrics are encouraged for lifestyle and\n  luxury formats." in prompt
+
+
+@pytest.mark.parametrize("offer_type", list(creative.FORMATS_BY_OFFER_TYPE))
+def test_realism_rule_is_in_every_plan(offer_type):
+    # Every offer type allows at least one format with people in it.
+    prompt = creative.build_prompt(REQUEST.model_copy(update={"offer_type": offer_type}), "")
+
+    assert creative.REALISM_RULE in prompt
+    flat = " ".join(prompt.split())
+    for phrase in [
+        "ugc, model_with_product, lifestyle with people, before_after, experience, narrator",
+        "People must look like real, photographed humans, not AI-perfect.",
+        "visible pores and fine texture",
+        "freckles, moles, small spots, faint veins, or piercings",
+        "varied skin color within the face",
+        "Avoid airbrushed or plastic skin, perfect symmetry, and over-smoothed hair.",
+        "don't give everyone the same features",
+        "natural falloff, soft shadows, slight grain where it fits UGC.",
+    ]:
+        assert phrase in flat
 
 
 def test_planner_is_told_about_the_reference_photo_only_when_there_is_one():
