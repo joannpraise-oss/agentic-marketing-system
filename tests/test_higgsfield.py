@@ -131,7 +131,7 @@ def test_product_image_failure_never_logs_the_signed_url(fake, caplog):
 
 
 def test_product_image_cost_covers_long_prompts(fake):
-    assert higgsfield.estimate_product_image_cost() == Decimal("0.035")
+    assert higgsfield.estimate_product_image_cost() == Decimal("0.040")
     assert fake.calls == []
 
 

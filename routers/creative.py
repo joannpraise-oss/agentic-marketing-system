@@ -96,7 +96,7 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
     plan, planning_cost = creative.plan_creatives(data)
     for item in plan.items:  # changed here, so the saved asset keeps the prompt actually sent
         item.prompt = creative.finalize_image_prompt(
-            item.prompt, item.format, data.offer_type, data.brand.brand_name, has_photo
+            item.prompt, item.format, data.offer_type, data.brand.brand_name, has_photo, data.product_size
         )
     test_group_id = uuid.uuid4().hex if data.creative_test else None
     test_mode = ("varied_format" if data.vary_format else "fixed_format") if data.creative_test else None

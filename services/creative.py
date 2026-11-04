@@ -277,11 +277,13 @@ def planning_cost(prompt_tokens: int, completion_tokens: int) -> Decimal:
 
 
 # Formats where a person holds or uses the product: in the live run, a small, angled or
-# held bottle garbled its label, so these prompts require a big, front-facing label.
+# held bottle garbled its label, so these prompts require a front-facing, legible label. An
+# earlier "fills at least 25% of the frame" pushed the bottle toward the lens and oversized it,
+# so true size wins over label size.
 LABEL_FACING_FORMATS = ("ugc", "model_with_product")
 LABEL_FACING_RULE = (
-    "The product faces the camera with its label fully visible and readable, "
-    "and fills at least 25% of the frame."
+    "The product faces the camera; the label is in focus and legible, and the product stays at "
+    "true real-world size, even if that makes the label smaller."
 )
 # Formats that always show people. lifestyle sometimes does: its prompt is checked for people words.
 PEOPLE_FORMATS = ("ugc", "model_with_product", "before_after", "experience", "narrator")
@@ -299,19 +301,43 @@ REALISM_PROMPT = (
 # A live run showed the person holding one bottle and spraying from a second one.
 ONE_PRODUCT = "Exactly one product in the image."
 ONE_PRODUCT_HELD = "Exactly one product in the image; the person holds and uses the same single product."
+# Live runs showed the product oversized next to hands and faces, and blending into the hand.
+# Product-only shots get "surroundings" instead of hands, so the rule doesn't add a hand.
+SCALE_WITH_SIZE = "The product ({size}) is shown at true real-world size relative to {relative_to}."
+SCALE_HAND_LIMIT = "no larger than a hand from wrist to fingertip"
+SCALE_DEFAULT = "The product is shown at realistic real-world size, not enlarged."
+SEPARATION = (
+    "The product is in sharp focus and clearly separated from {from_what} by contrast in tone or lighting, "
+    "with a soft highlight along its edge."
+)
+HOLD_LOWER_HALF = "The hand holds the lower half so the label stays fully visible."
 
 
 def shows_people(format: str, prompt: str) -> bool:
     return format in PEOPLE_FORMATS or (format == "lifestyle" and bool(PEOPLE_WORDS.search(prompt)))
 
 
-def finalize_image_prompt(prompt: str, format: str, offer_type: str, brand_name: str, has_photo: bool) -> str:
+def product_rules(people: bool, product_size: Optional[str]) -> str:
+    """One product, its real size, and its separation from the hand and background."""
+    if product_size:
+        relative_to = f"the hands and face, {SCALE_HAND_LIMIT}" if people else "its surroundings"
+        scale = SCALE_WITH_SIZE.format(size=product_size, relative_to=relative_to)
+    else:
+        scale = SCALE_DEFAULT
+    separation = SEPARATION.format(from_what="the hand and background" if people else "the background")
+    rules = [ONE_PRODUCT_HELD if people else ONE_PRODUCT, scale, separation]
+    return " ".join(rules + [HOLD_LOWER_HALF] if people else rules)
+
+
+def finalize_image_prompt(
+    prompt: str, format: str, offer_type: str, brand_name: str, has_photo: bool, product_size: Optional[str] = None
+) -> str:
     """The prompt the image model gets: the planner's prompt plus the rules it must not drop."""
     people = shows_people(format, prompt)
     if people:
         prompt = f"{prompt} {REALISM_PROMPT}"
     if offer_type == "physical_product":
-        prompt = f"{prompt} {ONE_PRODUCT_HELD if people else ONE_PRODUCT}"
+        prompt = f"{prompt} {product_rules(people, product_size)}"
     return with_product_label(prompt, brand_name, format) if has_photo else prompt
 
 
@@ -336,8 +362,9 @@ def _product_photo_section(request: CreativeRequest) -> str:
         "(e.g. \"the bottle\") and do not redesign it: no new shape, colors, packaging or label.\n"
         "The product's own label and logo stay as in the photo; the no-logos/no-words rule below\n"
         "is about adding anything else.\n"
-        "In ugc and model_with_product, the product faces the camera with its label fully visible\n"
-        "and readable, and fills at least 25% of the frame: never small, angled away or hidden by a hand.\n"
+        "In ugc and model_with_product, the product faces the camera; the label is in focus and\n"
+        "legible, never angled away or hidden by a hand, and the product stays at true real-world\n"
+        "size. True size wins over label size: never enlarge the product to make the label bigger.\n"
     )
 
 

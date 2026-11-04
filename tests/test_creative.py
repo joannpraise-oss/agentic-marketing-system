@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from schemas.creative import Brand, CreativeRequest
+from schemas.creative import FORMATS_BY_OFFER_TYPE, Brand, CreativeRequest
 from services import creative
 
 BRAND = Brand(brand_name="Acme", voice="playful", colors=["red"], offer="sneakers", audience="runners")
@@ -705,13 +705,15 @@ def test_product_label_uses_the_wording_that_passed_the_visual_test():
 
 
 @pytest.mark.parametrize("format", ["ugc", "model_with_product"])
-def test_people_formats_require_a_big_front_facing_label(format):
+def test_people_formats_require_a_legible_front_facing_label_at_true_size(format):
     prompt = creative.with_product_label("Photo of a woman holding the bottle.", "J’aduné", format)
 
     assert prompt.startswith(
-        "Photo of a woman holding the bottle. The product faces the camera with its label fully visible "
-        "and readable, and fills at least 25% of the frame. The product label reads exactly «J’aduné»"
+        "Photo of a woman holding the bottle. The product faces the camera; the label is in focus and legible, "
+        "and the product stays at true real-world size, even if that makes the label smaller. "
+        "The product label reads exactly «J’aduné»"
     )
+    assert "25%" not in prompt
 
 
 @pytest.mark.parametrize("format", ["lifestyle", "studio_hero", "flat_lay", "problem_solution", "seasonal"])
@@ -723,7 +725,7 @@ def test_planner_is_told_people_formats_need_a_readable_label():
     prompt = creative.build_prompt(PHOTO_REQUEST, "")
 
     assert "In ugc and model_with_product, the product faces the camera" in prompt
-    assert "fills at least 25% of the frame" in prompt
+    assert "True size wins over label size" in prompt and "25%" not in prompt
 
 
 def test_props_rule_bans_lookalike_containers_and_encourages_mood_props():
@@ -780,8 +782,71 @@ def test_props_rule_is_left_out_when_there_is_no_product():
 
 # --- rules appended to every image prompt ---
 
-def finalize(prompt, format, offer_type="physical_product", has_photo=False):
-    return creative.finalize_image_prompt(prompt, format, offer_type, "J’aduné", has_photo)
+def finalize(prompt, format, offer_type="physical_product", has_photo=False, product_size=None):
+    return creative.finalize_image_prompt(prompt, format, offer_type, "J’aduné", has_photo, product_size)
+
+
+SIZE = "8 fl oz spray bottle, about 7 in tall"
+
+
+def test_product_size_sets_true_scale_against_hands_and_face():
+    prompt = finalize("Candid smartphone photo of a woman misting her hair.", "ugc", product_size=SIZE)
+
+    assert (
+        "The product (8 fl oz spray bottle, about 7 in tall) is shown at true real-world size relative to "
+        "the hands and face, no larger than a hand from wrist to fingertip."
+    ) in prompt
+    assert creative.SCALE_DEFAULT not in prompt
+
+
+def test_product_only_shots_scale_against_surroundings_not_hands():
+    prompt = finalize("Photo of the bottle on linen.", "studio_hero", product_size=SIZE)
+
+    assert f"The product ({SIZE}) is shown at true real-world size relative to its surroundings." in prompt
+    assert "hand" not in prompt  # mentioning a hand would invite one into the shot
+
+
+@pytest.mark.parametrize("format", ["ugc", "studio_hero"])
+def test_without_product_size_the_product_is_not_enlarged(format):
+    prompt = finalize("Photo of the scene.", format)
+
+    assert "The product is shown at realistic real-world size, not enlarged." in prompt
+    assert "true real-world size" not in prompt
+
+
+def test_held_product_is_separated_from_hand_and_held_by_the_lower_half():
+    prompt = finalize("Candid smartphone photo of a woman misting her hair.", "ugc")
+
+    assert (
+        "The product is in sharp focus and clearly separated from the hand and background by contrast in tone "
+        "or lighting, with a soft highlight along its edge."
+    ) in prompt
+    assert "The hand holds the lower half so the label stays fully visible." in prompt
+
+
+@pytest.mark.parametrize("format", sorted(set(FORMATS_BY_OFFER_TYPE["physical_product"]) - {"ugc", "model_with_product"}))
+def test_every_product_format_gets_scale_and_separation(format):
+    prompt = finalize("Photo of the bottle on linen.", format)
+
+    assert creative.SCALE_DEFAULT in prompt
+    assert "is in sharp focus and clearly separated from the background" in prompt
+    assert creative.HOLD_LOWER_HALF not in prompt
+
+
+def test_other_offer_types_get_no_scale_or_separation():
+    prompt = finalize("Photo of a fictional narrator.", "narrator", "content", product_size=SIZE)
+
+    assert "real-world size" not in prompt and "sharp focus" not in prompt
+
+
+def test_product_rules_come_before_the_label_rules():
+    prompt = finalize("Candid smartphone photo of a woman misting her hair.", "ugc", has_photo=True, product_size=SIZE)
+
+    one = prompt.index(creative.ONE_PRODUCT_HELD)
+    scale = prompt.index("true real-world size")
+    hold = prompt.index(creative.HOLD_LOWER_HALF)
+    facing = prompt.index(creative.LABEL_FACING_RULE)
+    assert one < scale < hold < facing
 
 
 @pytest.mark.parametrize("format", ["ugc", "model_with_product", "before_after", "experience", "narrator"])
@@ -820,7 +885,7 @@ def test_people_with_a_product_get_one_held_product():
 def test_product_without_people_gets_exactly_one_product():
     prompt = finalize("Photo of the bottle on linen.", "studio_hero")
 
-    assert prompt.endswith(" Exactly one product in the image.")
+    assert " Exactly one product in the image. " in prompt and creative.ONE_PRODUCT_HELD not in prompt
 
 
 def test_other_offer_types_get_no_product_rule():
@@ -843,4 +908,4 @@ def test_photo_runs_end_with_the_label_rules_after_realism_and_one_product():
 def test_runs_without_a_photo_get_no_label_rules():
     prompt = finalize("Candid smartphone photo of a woman misting her hair.", "ugc")
 
-    assert "label" not in prompt.lower()
+    assert "The product label reads" not in prompt and "reference photo" not in prompt

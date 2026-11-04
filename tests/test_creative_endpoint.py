@@ -211,8 +211,8 @@ def test_photo_run_uses_marketing_studio_with_the_signed_url_and_label(client, e
     for asset in assets:
         assert asset.model == "marketing-studio/image"
         assert asset.provider == "higgsfield"
-        # $0.035 image + $0.004 label check + $0.00105 / 3 planning = $0.03935, rounded to 4 places
-        assert asset.cost_usd == Decimal("0.0394")
+        # $0.040 image + $0.004 label check + $0.00105 / 3 planning = $0.04435, rounded to 4 places
+        assert asset.cost_usd == Decimal("0.0444")
 
 
 def test_only_people_formats_get_the_label_facing_rule(client, photo_mocks):
@@ -294,7 +294,7 @@ def test_run_without_a_photo_stays_on_soul_with_no_label_text(client, engine, ph
 
 def test_spend_estimate_uses_the_higher_price_only_with_a_photo(client, engine, photo_mocks):
     with Session(engine) as session:
-        # + $0.14 with a photo (3 x ($0.035 image + 2 x $0.005 reads) + reserve) > 5.00; + $0.028 without
+        # + $0.155 with a photo (3 x ($0.040 image + 2 x $0.005 reads) + reserve) > 5.00; + $0.028 without
         session.add(make_asset(cost_usd=Decimal("4.92")))
         session.commit()
 
@@ -336,6 +336,31 @@ def test_photo_is_rejected_for_other_offer_types(client, photo_mocks, offer_type
     assert resp.status_code == 400
     assert "physical_product" in resp.text
     assert photo_mocks.signed == [] and photo_mocks.planner_calls == []
+
+
+def test_product_size_reaches_every_image_prompt(client, photo_mocks):
+    size = "8 fl oz spray bottle, about 7 in tall"
+    resp = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO, "product_size": f"  {size} "})
+
+    assert resp.status_code == 200, resp.text
+    assert all(f"The product ({size}) is shown at true real-world size" in p for p, _ in photo_mocks.product_calls)
+
+
+@pytest.mark.parametrize("size, status", [("", 200), ("x" * 101, 400)])
+def test_blank_product_size_is_ignored_and_long_one_rejected(client, photo_mocks, size, status):
+    resp = client.post("/creative/generate", json={**PAYLOAD, "product_size": size})
+
+    assert resp.status_code == status, resp.text
+    if status == 200:
+        assert all(creative.SCALE_DEFAULT in a["prompt"] for a in resp.json()["assets"])
+
+
+def test_product_size_is_rejected_for_other_offer_types(client, photo_mocks):
+    resp = client.post("/creative/generate", json={**PAYLOAD, "offer_type": "service", "product_size": "7 in"})
+
+    assert resp.status_code == 400
+    assert "product_size is only used" in resp.text
+    assert photo_mocks.planner_calls == []
 
 
 @pytest.mark.parametrize("error, code", [
@@ -622,8 +647,8 @@ def test_older_photo_is_read_once_and_its_reference_saved(client, engine, photo_
     assert photo_mocks.photo_reads == [b"photo-bytes"]
     assert photo_mocks.saved_references == [(PHOTO, REFERENCE)]  # saved as read; corrected per run
     assert {check[2] for check in photo_mocks.label_checks} == {CORRECTED}
-    # $0.035 image + $0.004 check + ($0.00105 planning + $0.003 photo read) / 3 = $0.04035
-    assert {asset.cost_usd for asset in saved_assets(engine)} == {Decimal("0.0404")}
+    # $0.040 image + $0.004 check + ($0.00105 planning + $0.003 photo read) / 3 = $0.04535
+    assert {asset.cost_usd for asset in saved_assets(engine)} == {Decimal("0.0454")}
 
 
 def test_saved_reference_means_no_new_read_of_the_photo(client, photo_mocks):
@@ -650,4 +675,4 @@ def test_every_image_prompt_gets_realism_and_one_product_rules(client, photo_moc
     assert creative.REALISM_PROMPT in prompts["track"] and creative.ONE_PRODUCT_HELD in prompts["track"]
     for key in ("beach", "city"):
         assert creative.REALISM_PROMPT not in prompts[key]
-        assert f"{creative.ONE_PRODUCT} The product label" in prompts[key]
+        assert creative.ONE_PRODUCT in prompts[key] and creative.HOLD_LOWER_HALF not in prompts[key]

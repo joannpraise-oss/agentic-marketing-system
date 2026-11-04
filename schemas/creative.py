@@ -19,6 +19,7 @@ MIN_TEST_ANGLES = 2
 MAX_ANGLE_CHARS = 60
 MAX_SOURCE_TEXT_CHARS = 2000
 MAX_STRATEGY_NOTES_CHARS = 1500
+MAX_PRODUCT_SIZE_CHARS = 100
 MAX_ON_IMAGE_WORDS = 12
 MAX_RENDERED_WORDS = 5  # image models only spell short text reliably
 
@@ -85,6 +86,8 @@ class CreativeRequest(BaseModel):
     # From POST /creative/product-photo. That endpoint's random names are the only ones allowed,
     # so only photos it has cleaned (no EXIF/GPS) can reach the image model.
     product_photo_path: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{32}\.jpg$")
+    # The product's real size, e.g. "8 fl oz spray bottle, about 7 in tall", so images show it to scale.
+    product_size: Optional[str] = Field(default=None, max_length=MAX_PRODUCT_SIZE_CHARS)
 
     @field_validator("angles")
     @classmethod
@@ -121,10 +124,19 @@ class CreativeRequest(BaseModel):
                 raise ValueError(f"test_format {self.test_format} does not fit a {self.offer_type} offer. Use one of: {allowed}.")
         return self
 
+    @field_validator("product_size")
+    @classmethod
+    def blank_product_size_is_none(cls, size: Optional[str]) -> Optional[str]:
+        if size is None:
+            return None
+        return " ".join(size.split()) or None
+
     @model_validator(mode="after")
     def product_photo_needs_physical_product(self) -> "CreativeRequest":
         if self.product_photo_path is not None and self.offer_type != "physical_product":
             raise ValueError("product_photo_path is only used with offer_type 'physical_product'.")
+        if self.product_size is not None and self.offer_type != "physical_product":
+            raise ValueError("product_size is only used with offer_type 'physical_product'.")
         return self
 
     @model_validator(mode="after")
