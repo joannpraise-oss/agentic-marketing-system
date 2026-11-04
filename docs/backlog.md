@@ -38,17 +38,17 @@ insensitive), and flag mismatches so the asset can't be approved as-is.
 
 `services/label_check.py` reads the label off the uploaded photo once (saved as
 `labels/<photo>.txt` in the private bucket) and compares each generated image's
-label with it. Three outcomes: an exact match passes; readable text that differs
-in any word, number or punctuation is `label_mismatch`; text too small to read
-passes as "unreadable". The brand name must always be readable and exact. Both
+label with it. Three outcomes: an exact match passes; visible text that differs
+in any word, number or punctuation is `label_mismatch`; text that is covered,
+out of view or too small to read passes as "unreadable". Key text such as the
+brand may be covered, but never garbled. Both
 reads see the product cropped (located with a labelled grid) and upscaled. A read
 that disagrees is retried once; both reads go in `asset.label_read` and the
 outcome in `asset.label_outcome` (NULL when no read worked). With two
-reads, a wrong word only counts if both saw it, and words both left out count as
-unreadable. Not covered yet:
+reads, a wrong word only counts if both saw it. Not covered yet:
 
-- A word the image dropped entirely (a missing badge) isn't caught: it looks
-  the same as small print the reader skipped.
+- A word the image dropped entirely (a missing badge, or the brand) isn't
+  caught: it looks the same as text that is covered or out of view.
 - The reader can still misread twice, on the generated image or on the
   reference photo itself, so a correct image can be flagged. There's no way to
   override a flag after a person has checked the image, or to correct a

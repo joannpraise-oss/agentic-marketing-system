@@ -282,14 +282,25 @@ def planning_cost(prompt_tokens: int, completion_tokens: int) -> Decimal:
     ) / Decimal(1_000_000)
 
 
-# Formats where a person holds or uses the product: in the live run, a small, angled or
-# held bottle garbled its label, so these prompts require a front-facing, legible label. An
-# earlier "fills at least 25% of the frame" pushed the bottle toward the lens and oversized it,
-# so true size wins over label size.
-LABEL_FACING_FORMATS = ("ugc", "model_with_product")
+# Formats that sell the label itself: in the live run, a small, angled or held bottle garbled
+# its label, so these prompts require a front-facing, legible label. An earlier "fills at least
+# 25% of the frame" pushed the bottle toward the lens and oversized it, so true size wins over
+# label size.
+LABEL_FACING_FORMATS = ("studio_hero", "model_with_product")
 LABEL_FACING_RULE = (
     "The product faces the camera; the label is in focus and legible, and the product stays at "
     "true real-world size, even if that makes the label smaller."
+)
+# Formats that show the product in use: a forced front-facing label looks staged, so a hand may
+# cover part of it or the product may turn. Covered text is fine; visible text must still be exact.
+IN_USE_FORMATS = ("ugc", "lifestyle")
+IN_USE_LABEL_RULE = (
+    "The product is handled naturally while in use: the hand may cover part of the label or the product "
+    "may be turned, and it stays at true real-world size."
+)
+IN_USE_LABEL_RULE_NO_PEOPLE = (
+    "The product may sit at a natural angle with part of the label out of view, and it stays at "
+    "true real-world size."
 )
 # Formats that always show people. lifestyle sometimes does: its prompt is checked for people words.
 PEOPLE_FORMATS = ("ugc", "model_with_product", "before_after", "experience", "narrator")
@@ -299,13 +310,14 @@ PEOPLE_WORDS = re.compile(
     re.IGNORECASE,
 )
 # The planner ignored REALISM_RULE in the live run, so this short form goes on the prompt itself.
-# "Editorial portrait" implied retouching (poreless, glossy skin), so it's a candid phone photo.
-# The wardrobe and framing below keep it clear of the content filter, which rejected an earlier
-# skin-detail wording; a rejection is retried once with SAFER_REALISM_PROMPT.
+# This is the wording of the best-looking runs (#25, #26; see docs/golden/). Later rewordings
+# ("editorial portrait", "candid smartphone photo ... matte skin") looked worse. The wardrobe and
+# framing below are what keep it clear of the content filter; a rejection is retried once with
+# SAFER_REALISM_PROMPT.
 REALISM_PROMPT = (
-    "Candid smartphone photo, unretouched, no beauty filter, no skin smoothing; visible pores and natural "
-    "texture on the face, slight unevenness in skin tone, matte skin with natural shine only on the high "
-    "points, natural teeth."
+    "Real photographed human, not AI-perfect: visible pores and fine skin texture, natural unevenness, "
+    "freckles/moles/spots where natural, healthy glow with real shadows and undertones, no airbrushing, "
+    "natural camera grain."
 )
 WARDROBE_FRAMING = (
     "The person is fully clothed in everyday wear suited to the brand (e.g. a linen shirt or knit top), "
@@ -313,8 +325,6 @@ WARDROBE_FRAMING = (
 )
 # The retry after a content-filter rejection: no skin wording at all, and risky scene words swapped.
 SAFER_REALISM_PROMPT = "Candid smartphone photo, unretouched, no beauty filter, natural light."
-DROPPED_PEOPLE_WORDS = re.compile(r",?\s*\b(?:(?:faint|visible|subtle|small)\s+)*veins?\b|,?\s*\bglowing skin\b",
-                                  re.IGNORECASE)
 SAFER_SWAPS = [
     (re.compile(p, re.IGNORECASE), replacement) for p, replacement in [
         (r"\b(?:sensual|sexy|seductive|intimate|sultry|steamy)\s*", ""),
@@ -344,8 +354,11 @@ def shows_people(format: str, prompt: str) -> bool:
     return format in PEOPLE_FORMATS or (format == "lifestyle" and bool(PEOPLE_WORDS.search(prompt)))
 
 
-def product_rules(people: bool, product_size: Optional[str]) -> str:
-    """One product, its real size, and its separation from the hand and background."""
+def product_rules(people: bool, product_size: Optional[str], format: str = "") -> str:
+    """One product, its real size, and its separation from the hand and background.
+
+    The hand holds the lower half, keeping the label clear, except in formats shown in use.
+    """
     if product_size:
         relative_to = f"the hands and face, {SCALE_HAND_LIMIT}" if people else "its surroundings"
         scale = SCALE_WITH_SIZE.format(size=product_size, relative_to=relative_to)
@@ -353,7 +366,7 @@ def product_rules(people: bool, product_size: Optional[str]) -> str:
         scale = SCALE_DEFAULT
     separation = SEPARATION.format(from_what="the hand and background" if people else "the background")
     rules = [ONE_PRODUCT_HELD if people else ONE_PRODUCT, scale, separation]
-    return " ".join(rules + [HOLD_LOWER_HALF] if people else rules)
+    return " ".join(rules + [HOLD_LOWER_HALF] if people and format not in IN_USE_FORMATS else rules)
 
 
 def safer_scene(prompt: str) -> str:
@@ -373,18 +386,27 @@ def finalize_image_prompt(
     """
     people = shows_people(format, prompt)
     if people:
-        prompt = DROPPED_PEOPLE_WORDS.sub("", prompt)
         if safer:
             prompt = safer_scene(prompt)
         prompt = f"{prompt} {SAFER_REALISM_PROMPT if safer else REALISM_PROMPT} {WARDROBE_FRAMING}"
     if offer_type == "physical_product":
-        prompt = f"{prompt} {product_rules(people, product_size)}"
+        prompt = f"{prompt} {product_rules(people, product_size, format)}"
     return with_product_label(prompt, brand_name, format) if has_photo else prompt
+
+
+def label_rule(prompt: str, format: str) -> str:
+    """How the label must show for this format: facing and legible, natural in use, or no rule."""
+    if format in LABEL_FACING_FORMATS:
+        return LABEL_FACING_RULE
+    if format in IN_USE_FORMATS:
+        return IN_USE_LABEL_RULE if shows_people(format, prompt) else IN_USE_LABEL_RULE_NO_PEOPLE
+    return ""
 
 
 def with_product_label(prompt: str, brand_name: str, format: str) -> str:
     """Image prompt for a run with a product photo: the model must copy the label, not reinvent it."""
-    facing = f" {LABEL_FACING_RULE}" if format in LABEL_FACING_FORMATS else ""
+    rule = label_rule(prompt, format)
+    facing = f" {rule}" if rule else ""
     return (
         f"{prompt}{facing} The product label reads exactly «{brand_name}» with the apostrophe. Keep all label text "
         "exactly as in the reference photo; do not change or invent any text. "
@@ -403,9 +425,11 @@ def _product_photo_section(request: CreativeRequest) -> str:
         "(e.g. \"the bottle\") and do not redesign it: no new shape, colors, packaging or label.\n"
         "The product's own label and logo stay as in the photo; the no-logos/no-words rule below\n"
         "is about adding anything else.\n"
-        "In ugc and model_with_product, the product faces the camera; the label is in focus and\n"
-        "legible, never angled away or hidden by a hand, and the product stays at true real-world\n"
-        "size. True size wins over label size: never enlarge the product to make the label bigger.\n"
+        "In studio_hero and model_with_product, the product faces the camera; the label is in focus\n"
+        "and legible, never angled away or hidden by a hand. In ugc and lifestyle, show the product\n"
+        "naturally in use: a hand may cover part of the label or the product may be turned.\n"
+        "In every format the product stays at true real-world size. True size wins over label size:\n"
+        "never enlarge the product to make the label bigger.\n"
     )
 
 
@@ -428,9 +452,9 @@ def _props_rule(request: CreativeRequest) -> str:
 REALISM_RULE = """- Realism, in every image prompt that shows people (ugc, model_with_product, lifestyle
   with people, before_after, experience, narrator): People must look like real, photographed
   humans, not AI-perfect. Describe natural skin: visible pores and fine texture, subtle
-  unevenness, and where it suits the person, freckles, moles, small spots, or piercings.
-  Give skin real depth: natural shadows, highlights and undertones, and varied skin color
-  within the face. Avoid airbrushed or plastic skin, perfect
+  unevenness, and where it suits the person, freckles, moles, small spots, faint veins, or
+  piercings. Keep skin healthy and glowing, with real depth: natural shadows, highlights and
+  undertones, and varied skin color within the face. Avoid airbrushed or plastic skin, perfect
   symmetry, and over-smoothed hair. Vary these details across people and ads; don't give
   everyone the same features. Lighting should look like a real camera: natural falloff, soft
   shadows, slight grain where it fits UGC. People are fully clothed in everyday wear suited

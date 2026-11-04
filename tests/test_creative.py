@@ -732,15 +732,15 @@ PHOTO_REQUEST = REQUEST.model_copy(update={"product_photo_path": "f51db36f3c0844
 
 
 def test_product_label_uses_the_wording_that_passed_the_visual_test():
-    assert creative.with_product_label("Studio photo of the bottle.", "J’aduné", "studio_hero") == (
-        "Studio photo of the bottle. The product label reads exactly «J’aduné» with the apostrophe. "
+    assert creative.with_product_label("Top-down photo of the bottle.", "J’aduné", "flat_lay") == (
+        "Top-down photo of the bottle. The product label reads exactly «J’aduné» with the apostrophe. "
         "Keep all label text exactly as in the reference photo; do not change or invent any text. "
         "Do not add objects beyond those described in this prompt."
     )
 
 
-@pytest.mark.parametrize("format", ["ugc", "model_with_product"])
-def test_people_formats_require_a_legible_front_facing_label_at_true_size(format):
+@pytest.mark.parametrize("format", ["studio_hero", "model_with_product"])
+def test_label_formats_require_a_legible_front_facing_label_at_true_size(format):
     prompt = creative.with_product_label("Photo of a woman holding the bottle.", "J’aduné", format)
 
     assert prompt.startswith(
@@ -751,15 +751,39 @@ def test_people_formats_require_a_legible_front_facing_label_at_true_size(format
     assert "25%" not in prompt
 
 
-@pytest.mark.parametrize("format", ["lifestyle", "studio_hero", "flat_lay", "problem_solution", "seasonal"])
+@pytest.mark.parametrize("format", ["ugc", "lifestyle", "flat_lay", "problem_solution", "seasonal"])
 def test_other_formats_keep_their_own_framing(format):
     assert creative.LABEL_FACING_RULE not in creative.with_product_label("Photo of the bottle.", "J’aduné", format)
+
+
+@pytest.mark.parametrize("format, prompt", [
+    ("ugc", "Candid smartphone photo of a woman misting her hair."),
+    ("lifestyle", "Eye-level lifestyle photo of a woman reading by the window."),
+])
+def test_in_use_formats_let_the_hand_cover_the_label_and_keep_true_size(format, prompt):
+    prompt = finalize(prompt, format, has_photo=True, product_size=SIZE)
+
+    assert (
+        "The product is handled naturally while in use: the hand may cover part of the label or the product "
+        "may be turned, and it stays at true real-world size."
+    ) in prompt
+    assert "faces the camera" not in prompt and creative.HOLD_LOWER_HALF not in prompt
+    assert f"The product ({SIZE}) is shown at true real-world size" in prompt
+    assert "The product label reads exactly «J’aduné»" in prompt  # visible text must still be exact
+
+
+def test_lifestyle_without_people_may_turn_the_product_but_adds_no_hand():
+    prompt = finalize("Eye-level lifestyle photo of the bottle on a vanity with candles.", "lifestyle", has_photo=True)
+
+    assert creative.IN_USE_LABEL_RULE_NO_PEOPLE in prompt and "hand" not in prompt
+    assert "faces the camera" not in prompt
 
 
 def test_planner_is_told_people_formats_need_a_readable_label():
     prompt = creative.build_prompt(PHOTO_REQUEST, "")
 
-    assert "In ugc and model_with_product, the product faces the camera" in prompt
+    assert "In studio_hero and model_with_product, the product faces the camera" in prompt
+    assert "In ugc and lifestyle, show the product\nnaturally in use" in prompt
     assert "True size wins over label size" in prompt and "25%" not in prompt
 
 
@@ -782,7 +806,8 @@ def test_realism_rule_is_in_every_plan(offer_type):
         "ugc, model_with_product, lifestyle with people, before_after, experience, narrator",
         "People must look like real, photographed humans, not AI-perfect.",
         "visible pores and fine texture",
-        "freckles, moles, small spots, or piercings",
+        "freckles, moles, small spots, faint veins, or piercings",
+        "Keep skin healthy and glowing, with real depth",
         "fully clothed in everyday wear suited to the brand (e.g. a linen shirt or knit top)",
         "framed head-and-shoulders or waist-up",
         "varied skin color within the face",
@@ -852,7 +877,7 @@ def test_without_product_size_the_product_is_not_enlarged(format):
 
 
 def test_held_product_is_separated_from_hand_and_held_by_the_lower_half():
-    prompt = finalize("Candid smartphone photo of a woman misting her hair.", "ugc")
+    prompt = finalize("Photo of a fictional model holding the bottle.", "model_with_product")
 
     assert (
         "The product is in sharp focus and clearly separated from the hand and background by contrast in tone "
@@ -877,7 +902,8 @@ def test_other_offer_types_get_no_scale_or_separation():
 
 
 def test_product_rules_come_before_the_label_rules():
-    prompt = finalize("Candid smartphone photo of a woman misting her hair.", "ugc", has_photo=True, product_size=SIZE)
+    prompt = finalize("Photo of a fictional model holding the bottle.", "model_with_product", has_photo=True,
+                      product_size=SIZE)
 
     one = prompt.index(creative.ONE_PRODUCT_HELD)
     scale = prompt.index("true real-world size")
@@ -891,11 +917,12 @@ def test_people_formats_get_the_realism_rule(format):
     assert creative.REALISM_PROMPT in finalize("Photo of the scene.", format, "service")
 
 
-def test_realism_prompt_wording():
+def test_realism_prompt_is_the_wording_of_the_golden_runs():
+    # #25 and #26 (docs/golden/), made at bcecaa5.
     assert creative.REALISM_PROMPT == (
-        "Candid smartphone photo, unretouched, no beauty filter, no skin smoothing; visible pores and natural "
-        "texture on the face, slight unevenness in skin tone, matte skin with natural shine only on the high "
-        "points, natural teeth."
+        "Real photographed human, not AI-perfect: visible pores and fine skin texture, natural unevenness, "
+        "freckles/moles/spots where natural, healthy glow with real shadows and undertones, no airbrushing, "
+        "natural camera grain."
     )
 
 
@@ -903,10 +930,6 @@ def test_no_prompt_wording_says_editorial():
     # "editorial" implies retouching: the live images came back poreless and glossy.
     for wording in (creative.REALISM_PROMPT, creative.SAFER_REALISM_PROMPT):
         assert "editorial" not in wording.lower()
-
-
-def test_planner_realism_rule_drops_veins_and_glowing_skin():
-    assert "vein" not in creative.REALISM_RULE and "glowing" not in creative.REALISM_RULE
 
 
 @pytest.mark.parametrize("format", ["ugc", "model_with_product", "before_after", "experience", "narrator"])
@@ -921,16 +944,11 @@ def test_product_only_formats_get_no_wardrobe_rule():
     assert creative.WARDROBE_FRAMING not in finalize("Photo of the bottle on linen.", "studio_hero")
 
 
-@pytest.mark.parametrize("planner_prompt", [
-    "Portrait of a woman with faint visible veins on her temple, holding the bottle.",
-    "Portrait of a woman with glowing skin, holding the bottle.",
-    "Portrait of a woman, freckles, veins, holding the bottle.",
-])
-def test_people_prompts_drop_veins_and_glowing_skin(planner_prompt):
-    prompt = finalize(planner_prompt, "model_with_product")
+def test_people_prompts_keep_the_planners_skin_wording():
+    # Only wardrobe and framing were added for the content filter; the scene is passed on as written.
+    planner = "Portrait of a woman with glowing skin and faint veins on her temple, holding the bottle."
 
-    assert "vein" not in prompt.lower() and "glowing skin" not in prompt.lower()
-    assert "holding the bottle" in prompt
+    assert finalize(planner, "model_with_product").startswith(planner)
 
 
 def test_safer_retry_wording_has_no_skin_detail_and_swaps_risky_scene_words():
@@ -985,7 +1003,7 @@ def test_other_offer_types_get_no_product_rule():
 
 
 def test_photo_runs_end_with_the_label_rules_after_realism_and_one_product():
-    prompt = finalize("Candid smartphone photo of a woman misting her hair.", "ugc", has_photo=True)
+    prompt = finalize("Photo of a fictional model holding the bottle.", "model_with_product", has_photo=True)
 
     realism = prompt.index(creative.REALISM_PROMPT)
     one = prompt.index(creative.ONE_PRODUCT_HELD)

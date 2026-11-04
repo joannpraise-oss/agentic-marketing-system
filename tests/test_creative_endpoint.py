@@ -67,7 +67,8 @@ def mocks(monkeypatch):
 def key_of(prompt):
     """make_item prompts end with a short key ("track", "beach", "city"); the router appends its rules after it."""
     for rule in (creative.REALISM_PROMPT, creative.SAFER_REALISM_PROMPT, creative.ONE_PRODUCT,
-                 creative.LABEL_FACING_RULE, " The product label"):
+                 creative.LABEL_FACING_RULE, creative.IN_USE_LABEL_RULE, creative.IN_USE_LABEL_RULE_NO_PEOPLE,
+                 " The product label"):
         prompt = prompt.split(" " + rule.strip())[0]
     return prompt.split()[-1]
 
@@ -218,12 +219,14 @@ def test_photo_run_uses_marketing_studio_with_the_signed_url_and_label(client, e
         assert asset.cost_usd == expected.quantize(Decimal("0.0001"), ROUND_HALF_UP)
 
 
-def test_only_people_formats_get_the_label_facing_rule(client, photo_mocks):
+def test_each_format_gets_its_own_label_rule(client, photo_mocks):
     client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
 
-    by_key = {key_of(prompt): creative.LABEL_FACING_RULE in prompt
+    in_use = (creative.IN_USE_LABEL_RULE, creative.IN_USE_LABEL_RULE_NO_PEOPLE)
+    by_key = {key_of(prompt): (creative.LABEL_FACING_RULE in prompt, any(rule in prompt for rule in in_use))
               for prompt, _ in photo_mocks.product_calls}
-    assert by_key == {"track": True, "beach": False, "city": False}  # ugc, lifestyle, flat_lay
+    # ugc and lifestyle are shown in use; flat_lay gets neither rule
+    assert by_key == {"track": (False, True), "beach": (False, True), "city": (False, False)}
 
 
 def test_every_photo_image_gets_a_label_check_against_brand_name(client, engine, photo_mocks):

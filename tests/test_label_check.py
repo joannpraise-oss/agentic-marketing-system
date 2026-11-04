@@ -179,22 +179,21 @@ def test_label_differences_ignore_order_case_apostrophe_style_and_line_breaks():
 
 
 @pytest.mark.parametrize("read, differences", [
-    ("8 fl oz (237 mL).", ["missing: ml)", "extra: ml)."]),  # punctuation
-    ("8 fl oz (236 mL)", ["missing: (237", "extra: (236"]),  # a number
-    ("8 fl oz / 237 mL", ["missing: (237", "missing: ml)", "extra: /", "extra: 237", "extra: ml"]),
+    ("8 fl oz (237 mL).", ["extra: ml)."]),  # punctuation
+    ("8 fl oz (236 mL)", ["extra: (236"]),  # a number
+    ("8 fl oz / 237 mL", ["extra: /", "extra: 237", "extra: ml"]),
     ("8 fl oz (237 mL) PEPTIDE-INFUSED", ["extra: peptide-infused"]),  # an invented word
 ])
 def test_any_readable_difference_counts(read, differences):
     assert label_check.label_differences("8 fl oz (237 mL)", read) == differences
 
 
-def test_label_differences_name_each_missing_and_invented_word():
+def test_label_differences_name_each_invented_word_but_not_missing_ones():
     reference = "JB J’aduné BEAUTY PEPTIDE INFUSED hydrating hair mist 8 fl oz (237 mL)"
     read = "JB\nJ'ADUNÉ\nBEAUTY\npuré white\nhydrating hair mist\n8 fl oz (237 mL)"  # live misread of #23
 
-    assert label_check.label_differences(reference, read) == [
-        "missing: infused", "missing: peptide", "extra: puré", "extra: white",
-    ]
+    # PEPTIDE INFUSED wasn't read: it may be covered or out of view, so it isn't a difference
+    assert label_check.label_differences(reference, read) == ["extra: puré", "extra: white"]
 
 
 def test_with_a_reference_any_wrong_word_fails_the_check(vision):
@@ -236,14 +235,39 @@ REFERENCE = "JB J’aduné BEAUTY PEPTIDE INFUSED hydrating hair mist 8 fl oz (2
     ("JB\nJ'ADUNÉ\nBEAUTY\nPEP??DE INFUSED\nhydrating hair mist\n8 fl oz (2?7 mL)", "unreadable"),
     # readable but different: flagged, even next to unreadable text
     ("JB\nJ'ADUNÉ\nBEAUTY\n[unreadable]\nhydrating hair mist\n8 fl oz (236 mL)", "mismatch"),
-    ("JB\nJ'ADUNÉ\nBEAUTY\nhydrating hair mist\n8 fl oz (237 mL)", "mismatch"),  # badge gone, nothing unreadable
-    # the brand must always be readable and exact
+    # covered by a hand or turned out of view: passes
+    ("JB\nJ'ADUNÉ\nBEAUTY\nhydrating hair mist\n8 fl oz (237 mL)", "unreadable"),  # badge covered
+    ("hydrating hair mist\n8 fl oz (237 mL)", "unreadable"),  # brand covered
+    ("JB\n[unreadable]\nBEAUTY\nPEPTIDE INFUSED\nhydrating hair mist\n8 fl oz (237 mL)", "unreadable"),
+    ("", "unreadable"),  # the label turned away entirely
+    # key text may be covered, never garbled
     ("JB\nJ'ADUN?\nBEAUTY\n[unreadable]", "mismatch"),
-    ("JB\n[unreadable]\nBEAUTY\nPEPTIDE INFUSED\nhydrating hair mist\n8 fl oz (237 mL)", "mismatch"),
     ("JB\nJADUNÉ\nBEAUTY\nPEPTIDE INFUSED\nhydrating hair mist\n8 fl oz (237 mL)", "mismatch"),
+    ("JB\nTADUNÉ\nhydrating hair mist", "mismatch"),
 ])
 def test_assess_has_three_outcomes(read, outcome):
     assert label_check.assess(read, "J’aduné", REFERENCE)[0] == outcome
+
+
+@pytest.mark.parametrize("read, outcome", [
+    ("HYDRATING HAIR MIST", "unreadable"),  # brand turned away
+    ("J'ADUNÉ\nHYDRATING HAIR MIST", "match"),
+    ("TADUNE\nHYDRATING HAIR MIST", "mismatch"),  # brand visible but garbled
+])
+def test_without_a_reference_a_covered_brand_passes_but_a_garbled_one_doesnt(read, outcome):
+    assert label_check.assess(read, "J’aduné", None)[0] == outcome
+
+
+def test_a_covered_label_passes_without_a_second_read(vision):
+    vision.text = "JB\nhydrating hair mist"  # the hand covers the brand and the badge
+
+    result = label_check.check_label(b"png", "image/png", "J’aduné", REFERENCE)
+
+    assert result.ok and result.outcome == "unreadable" and len(vision.calls) == 1
+
+
+def test_reader_is_told_to_leave_out_covered_text():
+    assert "Leave out text that is covered" in label_check.PROMPT
 
 
 def test_unreadable_small_print_passes_without_a_second_read(vision):

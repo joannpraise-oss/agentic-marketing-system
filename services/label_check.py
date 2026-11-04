@@ -38,7 +38,8 @@ PROMPT = (
     "in reading order, character for character, including accents and apostrophes. "
     "Do not correct spelling or guess: write ? for any character you can't make out, and write "
     "[unreadable] in place of any text that is there but too small or blurry to read at all. "
-    "Return an empty string if the product has no label text."
+    "Leave out text that is covered (by a hand, for example) or turned out of view. "
+    "Return an empty string if no label text is visible."
 )
 
 
@@ -123,11 +124,11 @@ class LabelCheck:
     ok: bool
     text_read: str | None  # None when the read itself failed
     cost_usd: Decimal
-    mismatched: list[str] = field(default_factory=list)  # e.g. "missing: peptide", "extra: puré"
+    mismatched: list[str] = field(default_factory=list)  # e.g. "brand: expected 'J’aduné'", "extra: puré"
     read_twice: bool = False  # the first read didn't pass, so the image was read again
     second_read: str | None = None  # None when not taken, or when it failed
-    # match: every word read exactly. unreadable: the brand is exact, the rest that could be read
-    # matches, and some small text couldn't be read (passes). mismatch: something readable differs.
+    # match: every word read exactly. unreadable: nothing visible is wrong, but some text is covered,
+    # out of view or too small to read (passes). mismatch: visible text is wrong.
     # failed: no read worked.
     outcome: str | None = None
     cropped: bool = False  # the reads saw the product cropped and upscaled, not the whole image
@@ -197,16 +198,33 @@ def readable_tokens(text: str) -> tuple[list[str], bool]:
 
 
 def label_differences(reference: str, label_text: str) -> list[str]:
-    """Readable words that differ from the reference, punctuation included; order and case are ignored.
+    """Readable words that aren't on the reference, punctuation included; order and case are ignored.
 
-    A reference word that wasn't read is only a difference if nothing was marked unreadable:
-    otherwise it is taken to be in the text too small to read.
+    A reference word that wasn't read is never a difference: it may be covered, turned out of
+    view or too small to read. Only visible text that is wrong counts.
     """
-    want_tokens, _ = readable_tokens(reference)
-    got_tokens, unreadable = readable_tokens(label_text)
-    want, got = Counter(want_tokens), Counter(got_tokens)
-    missing = [] if unreadable else [f"missing: {w}" for w in sorted((want - got).elements())]
-    return missing + [f"extra: {w}" for w in sorted((got - want).elements())]
+    want, got = Counter(readable_tokens(reference)[0]), Counter(readable_tokens(label_text)[0])
+    return [f"extra: {w}" for w in sorted((got - want).elements())]
+
+
+def missing_words(reference: str, label_text: str) -> bool:
+    """True if a reference word wasn't read in full: the label isn't wholly visible and readable."""
+    want, got = Counter(readable_tokens(reference)[0]), Counter(readable_tokens(label_text)[0])
+    return bool(want - got)
+
+
+def garbled_brand(label_text: str, brand_name: str) -> bool:
+    """True if the brand shows but reads wrong: a run of words close to brand_name that isn't it.
+
+    No such run means the brand is covered or out of view, which passes. Uncertain characters
+    count against it ("J'ADUN?"): key text may be covered, never garbled.
+    """
+    if brand_matches(label_text, brand_name):
+        return False
+    tokens, size = label_text.split(), len(brand_name.split())
+    target = " ".join(_words(brand_name))
+    return any(SequenceMatcher(None, " ".join(_words(" ".join(tokens[i:i + size]))), target).ratio()
+               >= BRAND_SIMILARITY for i in range(len(tokens) - size + 1))
 
 
 def _data_url(image: bytes, content_type: str) -> str:
@@ -277,16 +295,26 @@ def read_label(image: bytes, content_type: str) -> tuple[str | None, Decimal]:
     return reading.label_text, creative.planning_cost(usage.prompt_tokens, usage.completion_tokens)
 
 
+def _wrong(text: str, brand_name: str, reference: str | None) -> list[str]:
+    """What visibly differs: a garbled brand, and words that aren't on the reference."""
+    wrong = [f"brand: expected {brand_name!r}"] if garbled_brand(text, brand_name) else []
+    return wrong + (label_differences(reference, text) if reference else [])
+
+
 def assess(text: str | None, brand_name: str, reference: str | None) -> tuple[str, list[str]]:
-    """One read's outcome and what differs. The brand must always be readable and exact."""
+    """One read's outcome and what differs.
+
+    Only visible text that is wrong is a mismatch. Text that is covered, out of view or too small
+    to read passes as unreadable; match means every word, brand included, was read exactly.
+    """
     if text is None:
         return FAILED, []
-    mismatched = [] if brand_matches(text, brand_name) else [f"brand: expected {brand_name!r}"]
-    if reference:
-        mismatched += label_differences(reference, text)
+    mismatched = _wrong(text, brand_name, reference)
     if mismatched:
         return MISMATCH, mismatched
-    return (UNREADABLE if readable_tokens(text)[1] else MATCH), []
+    complete = (brand_matches(text, brand_name) and not readable_tokens(text)[1]
+                and not (reference and missing_words(reference, text)))
+    return (MATCH if complete else UNREADABLE), []
 
 
 def combine_reads(first: str, second: str, brand_name: str, reference: str | None) -> tuple[str, list[str]]:
@@ -294,12 +322,11 @@ def combine_reads(first: str, second: str, brand_name: str, reference: str | Non
 
     A wrong word only counts if both reads saw the same one: on garbled small print the reads
     guess differently ("POTTO INTEIRO", then "POTION INEDITE"), which means it can't be read.
-    A word both reads left out counts as too small to read too: the reader skips tiny text
-    instead of marking it. The brand must be exact in at least one read.
+    A word left out never counts (see assess). The brand only counts as garbled if both reads
+    garbled it.
     """
-    mismatched = [] if brand_matches(first, brand_name) or brand_matches(second, brand_name) else [
-        f"brand: expected {brand_name!r}"
-    ]
+    garbled = garbled_brand(first, brand_name) and garbled_brand(second, brand_name)
+    mismatched = [f"brand: expected {brand_name!r}"] if garbled else []
     if reference:
         want = Counter(readable_tokens(reference)[0])
         extra_first = Counter(readable_tokens(first)[0]) - want
@@ -310,6 +337,8 @@ def combine_reads(first: str, second: str, brand_name: str, reference: str | Non
 
 def check_label(image: bytes, content_type: str, brand_name: str, reference: str | None = None) -> LabelCheck:
     """Check a generated image's label: match, unreadable (passes) or mismatch (flagged).
+
+    Covered or out-of-view text passes as unreadable; only visible text that is wrong is flagged.
 
     The reader misreads small text (it dropped a clearly printed apostrophe), so a read that
     disagrees, or fails, is retried once, and the image is flagged only if both reads find the
