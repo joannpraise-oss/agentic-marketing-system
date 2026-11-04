@@ -341,6 +341,23 @@ def test_single_angle_plan_fills_in_an_omitted_angle(returned):
     assert [i.angle for i in plan.items] == ["peptide care for soft, hydrated hair"]
 
 
+def test_single_angle_prompt_asks_for_one_concept_not_one_per_format():
+    # The live failure: "exactly 1 ad concepts ... formats may repeat" made the model return 5-7 items.
+    prompt = creative.build_prompt(REQUEST.model_copy(update={"angles": ["peptide care"]}), "")
+
+    assert "Create exactly ONE ad concept (items holds a single item) for the angle below." in prompt
+    assert "Do not make a concept for each format." in prompt
+    assert "ANGLE: peptide care" in prompt
+    assert "1 ad concepts" not in prompt and "formats may repeat" not in prompt
+
+
+def test_single_creative_plan_with_several_items_is_re_asked_for_one():
+    spec = creative.PlanSpec(count=1, angles=("moms",))
+    items = angle_items(["moms", "moms"], ["ugc", "lifestyle"])
+    with pytest.raises(ValidationError, match="exactly 1 creative in items, not 2: one concept, not one per format"):
+        creative.CreativePlan.model_validate({"items": items}, context={"spec": spec})
+
+
 def test_single_angle_plan_still_rejects_a_different_angle():
     spec = creative.PlanSpec(count=1, angles=("moms",))
     with pytest.raises(ValidationError, match="one creative per angle"):

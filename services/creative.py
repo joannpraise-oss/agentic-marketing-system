@@ -197,6 +197,8 @@ class CreativePlan(BaseModel):
         spec = (info.context or {}).get("spec") or PlanSpec()
         items = self.items
         if len(items) != spec.count:
+            if spec.count == 1:
+                raise ValueError(f"Return exactly 1 creative in items, not {len(items)}: one concept, not one per format.")
             raise ValueError(f"Return exactly {spec.count} creatives, not {len(items)}.")
         prompts = {item.prompt.strip().lower() for item in items}
         if len(prompts) != len(items):
@@ -496,6 +498,15 @@ def _task_intro(request: CreativeRequest) -> str:
             "brand, goal and platform:"
         )
     angles = "\n".join(f"{i}. {angle}" for i, angle in enumerate(request.angles, 1))
+    if len(request.angles) == 1:
+        # The plural wording ("exactly 1 ad concepts ... formats may repeat") above a list of
+        # formats made the model return one concept per format in live single-angle runs.
+        return (
+            "Create exactly ONE ad concept (items holds a single item) for the angle below.\n"
+            "Pick the ONE format from the list that best fits this angle, brand, goal and platform.\n"
+            "Do not make a concept for each format.\n"
+            f"ANGLE: {request.angles[0]}\n\nFormats:"
+        )
     if not request.creative_test:
         return (
             f"Create exactly {len(request.angles)} ad concepts for the same offer, one per angle below, in this\n"
