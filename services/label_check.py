@@ -114,6 +114,8 @@ class LabelReading(BaseModel):
 
 
 MATCH, MISMATCH, UNREADABLE, FAILED = "match", "mismatch", "unreadable", "failed"
+# asset.label_outcome's CHECK allows only these; a failed check is stored as NULL (with label_ok False).
+STORED_OUTCOMES = (MATCH, UNREADABLE, MISMATCH)
 
 
 @dataclass
@@ -141,6 +143,11 @@ class LabelCheck:
         if all(r is None for r in reads):
             return None
         return SECOND_READ_SEPARATOR.join(FAILED_READ if r is None else r for r in reads)
+
+    @property
+    def stored_outcome(self) -> str | None:
+        """What goes in asset.label_outcome: match, unreadable or mismatch; None when no read worked."""
+        return self.outcome if self.outcome in STORED_OUTCOMES else None
 
 
 SECOND_READ_SEPARATOR = "\n--- second read ---\n"

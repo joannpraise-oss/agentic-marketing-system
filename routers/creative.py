@@ -182,6 +182,7 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
             core_message=item.core_message,
             label_ok=check.ok if check else None,
             label_read=check.reads_logged if check else None,
+            label_outcome=check.stored_outcome if check else None,
             status="draft",
             cost_usd=(_image_cost(item.prompt, has_photo) + planning_share + (check.cost_usd if check else Decimal("0"))).quantize(
                 COST_PRECISION, rounding=ROUND_HALF_UP

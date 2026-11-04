@@ -256,6 +256,35 @@ def test_both_reads_are_logged_on_the_asset(client, engine, monkeypatch, photo_m
     assert {a.label_read for a in saved_assets(engine)} == {logged}
 
 
+def test_label_outcome_is_saved_on_every_asset(client, engine, monkeypatch, photo_mocks):
+    checks = {
+        "track": label_check.LabelCheck(ok=True, text_read="J'ADUNÉ", cost_usd=Decimal("0.008")),
+        "beach": label_check.LabelCheck(ok=True, text_read="J'ADUNÉ [unreadable]", cost_usd=Decimal("0.008"),
+                                        outcome=label_check.UNREADABLE),
+        "city": label_check.LabelCheck(ok=False, text_read="J'ADUNE", cost_usd=Decimal("0.012"),
+                                       read_twice=True, second_read="J'ADUNE"),
+    }
+    monkeypatch.setattr(label_check, "check_label",
+                        lambda image, content_type, brand_name, reference=None: checks[image.decode().removeprefix("img:")])
+
+    body = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO}).json()["assets"]
+
+    expected = [(True, "match"), (True, "unreadable"), (False, "mismatch")]
+    assert [(a["label_ok"], a["label_outcome"]) for a in body] == expected
+    assert [(a.label_ok, a.label_outcome) for a in saved_assets(engine)] == expected
+
+
+def test_a_check_where_every_read_failed_saves_no_outcome(client, engine, monkeypatch, photo_mocks):
+    failed = label_check.LabelCheck(ok=False, text_read=None, cost_usd=Decimal("0.008"), outcome=label_check.FAILED)
+    monkeypatch.setattr(label_check, "check_label", lambda *args, **kwargs: failed)
+
+    body = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO}).json()["assets"]
+
+    # The column's CHECK allows only match / unreadable / mismatch, so a failed check is NULL with label_ok False.
+    assert [(a.label_ok, a.label_outcome) for a in saved_assets(engine)] == [(False, None)] * 3
+    assert [a["needs_input"] for a in body] == [["label_mismatch"]] * 3
+
+
 def test_label_mismatch_blocks_approval(client, engine, photo_mocks):
     photo_mocks.label_bad = {"track"}
     client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
@@ -275,6 +304,7 @@ def test_runs_without_a_photo_skip_the_label_check(client, engine, photo_mocks):
 
     assert photo_mocks.label_checks == []
     assert [a["label_ok"] for a in body] == [None, None, None]
+    assert [a["label_outcome"] for a in body] == [None, None, None]
     assert [a["needs_input"] for a in body] == [[], [], []]
 
 
