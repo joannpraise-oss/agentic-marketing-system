@@ -299,18 +299,20 @@ PEOPLE_WORDS = re.compile(
     re.IGNORECASE,
 )
 # The planner ignored REALISM_RULE in the live run, so this short form goes on the prompt itself.
-# Worded in photography terms: the skin-detail wording ("pores", "glow") got a model_with_product
-# image rejected as nsfw.
+# "Editorial portrait" implied retouching (poreless, glossy skin), so it's a candid phone photo.
+# The wardrobe and framing below keep it clear of the content filter, which rejected an earlier
+# skin-detail wording; a rejection is retried once with SAFER_REALISM_PROMPT.
 REALISM_PROMPT = (
-    "Unretouched editorial portrait, true-to-life skin texture with natural freckles and fine lines, "
-    "natural light, 85mm lens."
+    "Candid smartphone photo, unretouched, no beauty filter, no skin smoothing; visible pores and natural "
+    "texture on the face, slight unevenness in skin tone, matte skin with natural shine only on the high "
+    "points, natural teeth."
 )
 WARDROBE_FRAMING = (
     "The person is fully clothed in everyday wear suited to the brand (e.g. a linen shirt or knit top), "
     "framed head-and-shoulders or waist-up."
 )
 # The retry after a content-filter rejection: no skin wording at all, and risky scene words swapped.
-SAFER_REALISM_PROMPT = "Unretouched editorial portrait photo, natural light, 85mm lens."
+SAFER_REALISM_PROMPT = "Candid smartphone photo, unretouched, no beauty filter, natural light."
 DROPPED_PEOPLE_WORDS = re.compile(r",?\s*\b(?:(?:faint|visible|subtle|small)\s+)*veins?\b|,?\s*\bglowing skin\b",
                                   re.IGNORECASE)
 SAFER_SWAPS = [

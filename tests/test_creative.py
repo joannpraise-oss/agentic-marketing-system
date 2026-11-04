@@ -893,9 +893,16 @@ def test_people_formats_get_the_realism_rule(format):
 
 def test_realism_prompt_wording():
     assert creative.REALISM_PROMPT == (
-        "Unretouched editorial portrait, true-to-life skin texture with natural freckles and fine lines, "
-        "natural light, 85mm lens."
+        "Candid smartphone photo, unretouched, no beauty filter, no skin smoothing; visible pores and natural "
+        "texture on the face, slight unevenness in skin tone, matte skin with natural shine only on the high "
+        "points, natural teeth."
     )
+
+
+def test_no_prompt_wording_says_editorial():
+    # "editorial" implies retouching: the live images came back poreless and glossy.
+    for wording in (creative.REALISM_PROMPT, creative.SAFER_REALISM_PROMPT):
+        assert "editorial" not in wording.lower()
 
 
 def test_planner_realism_rule_drops_veins_and_glowing_skin():

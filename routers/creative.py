@@ -108,8 +108,10 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
     # Nothing is spent before this check: planning is covered by a reserve, images by the estimate.
     count = creative.creative_count(data)
     read_cost = label_check.RESERVE_USD if has_photo else Decimal("0")
-    # With a photo: up to two label reads per image, plus one read of the photo itself if it was never read.
-    check_spend_caps(session, (image_cost + 2 * read_cost) * count + read_cost + creative.PLANNING_RESERVE_USD)
+    check_cost = label_check.CHECK_RESERVE_USD if has_photo else Decimal("0")
+    # With a photo: a label check per image (locate + up to two reads), plus one read of the photo
+    # itself if it was never read.
+    check_spend_caps(session, (image_cost + check_cost) * count + read_cost + creative.PLANNING_RESERVE_USD)
 
     # Signed before planning, so a bad photo path costs nothing.
     generate = _product_image_generator(data.product_photo_path) if has_photo else higgsfield.generate_image
@@ -126,7 +128,7 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
         # The reserve assumed RESERVE_PROMPT_CHARS per prompt; re-check if the real prompts cost more.
         real = sum(higgsfield.product_image_cost(item.prompt) for item in plan.items)
         if real > image_cost * count:
-            check_spend_caps(session, real + 2 * read_cost * count + planning_cost + reference_cost)
+            check_spend_caps(session, real + check_cost * count + planning_cost + reference_cost)
     test_group_id = uuid.uuid4().hex if data.creative_test else None
     test_mode = ("varied_format" if data.vary_format else "fixed_format") if data.creative_test else None
 

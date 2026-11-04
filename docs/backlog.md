@@ -40,11 +40,17 @@ insensitive), and flag mismatches so the asset can't be approved as-is.
 `labels/<photo>.txt` in the private bucket) and compares each generated image's
 label with it. Three outcomes: an exact match passes; readable text that differs
 in any word, number or punctuation is `label_mismatch`; text too small to read
-passes as "unreadable". The brand name must always be readable and exact. A read
-that disagrees is retried once; both reads go in `asset.label_read`. Not covered yet:
+passes as "unreadable". The brand name must always be readable and exact. Both
+reads see the product cropped (located with a labelled grid) and upscaled. A read
+that disagrees is retried once; both reads go in `asset.label_read`. With two
+reads, a wrong word only counts if both saw it, and words both left out count as
+unreadable. Not covered yet:
 
 - The outcome (match / unreadable / mismatch) isn't stored: `label_ok` is True
-  for both match and unreadable. Storing it needs a column (schema change: ask).
+  for both match and unreadable. A `label_outcome` column is drafted; it needs
+  the ALTER TABLE run before the model and API can use it.
+- A word the image dropped entirely (a missing badge) isn't caught: it looks
+  the same as small print the reader skipped.
 - The reader can still misread twice, on the generated image or on the
   reference photo itself, so a correct image can be flagged. There's no way to
   override a flag after a person has checked the image, or to correct a

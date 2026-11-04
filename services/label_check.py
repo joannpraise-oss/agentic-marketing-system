@@ -1,5 +1,6 @@
 """Read product labels: once off the uploaded photo (the reference), then off each generated image."""
 import base64
+import io
 import logging
 import re
 import unicodedata
@@ -8,6 +9,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from difflib import SequenceMatcher
 
+from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field
 
 from services import creative
@@ -15,14 +17,17 @@ from services import creative
 logger = logging.getLogger(__name__)
 
 LABEL_MODEL = creative.PLANNING_MODEL  # same gpt-4o-mini pricing as planning_cost
-# Spend-cap reserve per read. A 1024px image at detail "high" is about 25k input tokens on
+# Spend-cap reserve per call. A 1024px image at detail "high" is about 25k input tokens on
 # gpt-4o-mini (~$0.004); the real cost from the usage is what goes on the asset.
 RESERVE_USD = Decimal("0.005")
+# One check: the product locate plus up to two reads.
+CHECK_RESERVE_USD = 3 * RESERVE_USD
 APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "´": "'", "`": "'"})
 WORD_PUNCTUATION = ".,;:!()[]{}\"“”«»"
 # The reader's marks for text it can see but not read: a whole run, or single characters.
 UNREADABLE_MARK = re.compile(r"\[\s*unreadable[^\]]*\]", re.IGNORECASE)
 UNREADABLE_CHAR = "?"
+UNCERTAIN_CHARS = "[]"  # the reader also brackets letters it isn't sure of: "[b]EAUTY"
 # How close a word read off the reference photo must be to brand_name to count as a misread of it.
 BRAND_SIMILARITY = 0.6
 
@@ -35,6 +40,73 @@ PROMPT = (
     "[unreadable] in place of any text that is there but too small or blurry to read at all. "
     "Return an empty string if the product has no label text."
 )
+
+
+# Small label text is only a few pixels tall at true size, and the reader sees the whole image
+# downscaled, so it missed the brand's apostrophe. Both reads get the product cropped and
+# upscaled so its long side is CROP_LONG_SIDE_PX: at detail "high" that is 2-4 tiles, no more
+# than the full image cost.
+CROP_LONG_SIDE_PX = 1024
+MAX_UPSCALE = 4
+MIN_BOX_AREA = 0.005  # a smaller box is a bad guess: read the whole image instead
+# Asked for coordinates, gpt-4o-mini put every box near the centre wherever the bottle was. A
+# labelled grid drawn on the image works (at detail "high"; "low" and a 512px copy were unreliable),
+# though it can miss by a column, so the crop adds half a cell on every side.
+GRID = 6
+GRID_ROWS = "ABCDEF"
+GRID_COLOR = (255, 0, 255)
+CELL_PATTERN = re.compile(rf"^([{GRID_ROWS}])([1-{GRID}])$")
+LOCATE_PROMPT = (
+    f"The image has a {GRID}x{GRID} grid drawn on it; each cell is labeled with its row letter (A at the top) "
+    "and column number (1 at the left). List every cell that contains any part of the product's label "
+    "(the printed text and logo on the bottle, jar or package). Return an empty list if there is no product."
+)
+
+
+class LabelCells(BaseModel):
+    cells: list[str] = Field(description="Grid cells such as \"D3\" that contain part of the product's label.")
+
+
+@dataclass
+class ProductBox:
+    """A region as fractions of the image width and height."""
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+
+def cells_to_box(cells: list[str]) -> ProductBox | None:
+    """The cells' bounding box plus half a cell on every side; None if no cell is valid."""
+    found = [m.groups() for m in (CELL_PATTERN.match(c.strip().upper()) for c in cells) if m]
+    if not found:
+        return None
+    rows = [GRID_ROWS.index(r) for r, _ in found]
+    cols = [int(c) - 1 for _, c in found]
+    half = 0.5 / GRID
+    return ProductBox(x0=min(cols) / GRID - half, y0=min(rows) / GRID - half,
+                      x1=(max(cols) + 1) / GRID + half, y1=(max(rows) + 1) / GRID + half)
+
+
+def _with_grid(image: bytes) -> bytes | None:
+    """The image as PNG with the labelled locate grid drawn on it; None if it isn't an image."""
+    try:
+        picture = Image.open(io.BytesIO(image)).convert("RGB")
+    except Exception:
+        return None
+    draw = ImageDraw.Draw(picture)
+    width, height = picture.size
+    font = ImageFont.load_default(size=max(14, width // 40))
+    for i in range(1, GRID):
+        draw.line([(width * i // GRID, 0), (width * i // GRID, height)], fill=GRID_COLOR, width=3)
+        draw.line([(0, height * i // GRID), (width, height * i // GRID)], fill=GRID_COLOR, width=3)
+    for row in range(GRID):
+        for col in range(GRID):
+            draw.text((width * col // GRID + 6, height * row // GRID + 4), f"{GRID_ROWS[row]}{col + 1}",
+                      fill=GRID_COLOR, font=font, stroke_width=2, stroke_fill=(255, 255, 255))
+    out = io.BytesIO()
+    picture.save(out, "PNG")
+    return out.getvalue()
 
 
 class LabelReading(BaseModel):
@@ -56,6 +128,7 @@ class LabelCheck:
     # matches, and some small text couldn't be read (passes). mismatch: something readable differs.
     # failed: no read worked.
     outcome: str | None = None
+    cropped: bool = False  # the reads saw the product cropped and upscaled, not the whole image
 
     def __post_init__(self):
         if self.outcome is None:
@@ -112,7 +185,7 @@ def reference_label(label_text: str, brand_name: str) -> str:
 def readable_tokens(text: str) -> tuple[list[str], bool]:
     """The words read in full, with their punctuation, and whether any text was marked unreadable."""
     tokens = _tokens(UNREADABLE_MARK.sub(" ", text))
-    readable = [t for t in tokens if UNREADABLE_CHAR not in t]
+    readable = [t for t in tokens if not any(c in t for c in UNREADABLE_CHAR + UNCERTAIN_CHARS)]
     return readable, bool(UNREADABLE_MARK.search(text)) or len(readable) < len(tokens)
 
 
@@ -129,9 +202,56 @@ def label_differences(reference: str, label_text: str) -> list[str]:
     return missing + [f"extra: {w}" for w in sorted((got - want).elements())]
 
 
+def _data_url(image: bytes, content_type: str) -> str:
+    return f"data:{content_type};base64,{base64.b64encode(image).decode()}"
+
+
+def locate_product(image: bytes) -> tuple[ProductBox | None, Decimal]:
+    """Where the product's label is, roughly, and the call's cost. Never raises: (None, cost) if not found."""
+    gridded = _with_grid(image)
+    if gridded is None:
+        return None, Decimal("0")
+    try:
+        located, completion = creative.client.chat.completions.create_with_completion(
+            model=LABEL_MODEL,
+            response_model=LabelCells,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": LOCATE_PROMPT},
+                {"type": "image_url", "image_url": {"url": _data_url(gridded, "image/png"), "detail": "high"}},
+            ]}],
+            max_tokens=100,
+            max_retries=1,
+        )
+    except Exception as exc:
+        logger.warning("Product locate failed: %s", type(exc).__name__)
+        return None, Decimal("0")
+    usage = completion.usage
+    return cells_to_box(located.cells), creative.planning_cost(usage.prompt_tokens, usage.completion_tokens)
+
+
+def crop_product(image: bytes, box: ProductBox) -> bytes | None:
+    """The box, upscaled for reading, as PNG; None if the box or the image is unusable."""
+    x0, x1 = sorted((min(max(box.x0, 0.0), 1.0), min(max(box.x1, 0.0), 1.0)))
+    y0, y1 = sorted((min(max(box.y0, 0.0), 1.0), min(max(box.y1, 0.0), 1.0)))
+    if (x1 - x0) * (y1 - y0) < MIN_BOX_AREA:
+        return None
+    try:
+        picture = Image.open(io.BytesIO(image))
+        picture.load()
+    except Exception:
+        return None
+    width, height = picture.size
+    crop = picture.convert("RGB").crop((int(x0 * width), int(y0 * height), int(x1 * width), int(y1 * height)))
+    scale = min(CROP_LONG_SIDE_PX / max(crop.size), MAX_UPSCALE)
+    crop = crop.resize((max(1, round(crop.width * scale)), max(1, round(crop.height * scale))), Image.LANCZOS)
+    out = io.BytesIO()
+    crop.save(out, "PNG")
+    return out.getvalue()
+
+
 def read_label(image: bytes, content_type: str) -> tuple[str | None, Decimal]:
     """The label text and the read's cost. Never raises: a failed read returns (None, 0)."""
-    data_url = f"data:{content_type};base64,{base64.b64encode(image).decode()}"
+    data_url = _data_url(image, content_type)
     try:
         reading, completion = creative.client.chat.completions.create_with_completion(
             model=LABEL_MODEL,
@@ -162,25 +282,54 @@ def assess(text: str | None, brand_name: str, reference: str | None) -> tuple[st
     return (UNREADABLE if readable_tokens(text)[1] else MATCH), []
 
 
+def combine_reads(first: str, second: str, brand_name: str, reference: str | None) -> tuple[str, list[str]]:
+    """The outcome of two reads that both found a problem.
+
+    A wrong word only counts if both reads saw the same one: on garbled small print the reads
+    guess differently ("POTTO INTEIRO", then "POTION INEDITE"), which means it can't be read.
+    A word both reads left out counts as too small to read too: the reader skips tiny text
+    instead of marking it. The brand must be exact in at least one read.
+    """
+    mismatched = [] if brand_matches(first, brand_name) or brand_matches(second, brand_name) else [
+        f"brand: expected {brand_name!r}"
+    ]
+    if reference:
+        want = Counter(readable_tokens(reference)[0])
+        extra_first = Counter(readable_tokens(first)[0]) - want
+        extra_second = Counter(readable_tokens(second)[0]) - want
+        mismatched += [f"extra: {w}" for w in sorted((extra_first & extra_second).elements())]
+    return (MISMATCH, mismatched) if mismatched else (UNREADABLE, [])
+
+
 def check_label(image: bytes, content_type: str, brand_name: str, reference: str | None = None) -> LabelCheck:
     """Check a generated image's label: match, unreadable (passes) or mismatch (flagged).
 
     The reader misreads small text (it dropped a clearly printed apostrophe), so a read that
-    disagrees, or fails, is retried once, and the image is flagged only if both reads disagree.
+    disagrees, or fails, is retried once, and the image is flagged only if both reads find the
+    same problem (see combine_reads). Both reads see the product cropped and upscaled; the whole
+    image if it can't be found.
     Never raises: failed reads come back as not ok, so the asset still needs review.
     """
-    text, cost = read_label(image, content_type)  # the image is already paid for: flag it, don't lose it
+    box, cost = locate_product(image)
+    crop = crop_product(image, box) if box else None
+    if crop:
+        image, content_type = crop, "image/png"
+    text, read_cost = read_label(image, content_type)  # the image is already paid for: flag it, don't lose it
+    cost += read_cost
     outcome, mismatched = assess(text, brand_name, reference)
     if outcome in (MATCH, UNREADABLE):
-        return LabelCheck(ok=True, text_read=text, cost_usd=cost, outcome=outcome)
+        return LabelCheck(ok=True, text_read=text, cost_usd=cost, outcome=outcome, cropped=bool(crop))
     second, second_cost = read_label(image, content_type)
     second_outcome, second_mismatched = assess(second, brand_name, reference)
-    ok = second_outcome in (MATCH, UNREADABLE)
-    if ok:
+    if second_outcome in (MATCH, UNREADABLE):
         final, mismatched = second_outcome, []
+    elif text is not None and second is not None:
+        final, mismatched = combine_reads(text, second, brand_name, reference)
     else:
         final = MISMATCH if MISMATCH in (outcome, second_outcome) else FAILED
         mismatched = second_mismatched or mismatched
+    ok = final in (MATCH, UNREADABLE)
+    if not ok:
         logger.info("Label %s: read %r, then %r; %s", final, text, second, mismatched)
     return LabelCheck(ok=ok, text_read=text, cost_usd=cost + second_cost, mismatched=mismatched,
-                      read_twice=True, second_read=second, outcome=final)
+                      read_twice=True, second_read=second, outcome=final, cropped=bool(crop))

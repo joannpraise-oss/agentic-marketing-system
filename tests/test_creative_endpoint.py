@@ -297,7 +297,7 @@ def test_run_without_a_photo_stays_on_soul_with_no_label_text(client, engine, ph
 
 def test_spend_estimate_uses_the_higher_price_only_with_a_photo(client, engine, photo_mocks):
     with Session(engine) as session:
-        # + $0.155 with a photo (3 x ($0.040 image + 2 x $0.005 reads) + reserve) > 5.00; + $0.028 without
+        # + $0.21 with a photo (3 x ($0.0456 image + $0.015 check) + reserves) > 5.00; + $0.028 without
         session.add(make_asset(cost_usd=Decimal("4.92")))
         session.commit()
 
@@ -314,8 +314,8 @@ def test_unusually_long_prompts_are_rechecked_against_the_cap_before_generating(
         item.prompt += " soft morning light" * 400  # ~7200 more characters each: well above the reserve
     photo_mocks.plan = long
     with Session(engine) as session:
-        # The reserve (3 x ($0.0456 + 2 x $0.005) + $0.015 = $0.18) fits under $5.00; these prompts don't.
-        session.add(make_asset(cost_usd=Decimal("4.81")))
+        # The reserve (3 x ($0.0456 + 3 x $0.005) + $0.015 = $0.197) fits under $5.00; these prompts don't.
+        session.add(make_asset(cost_usd=Decimal("4.80")))
         session.commit()
 
     resp = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
