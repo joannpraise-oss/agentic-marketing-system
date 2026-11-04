@@ -165,11 +165,12 @@ def photo_mocks(monkeypatch, mocks):
     """
     mocks.product_calls, mocks.signed, mocks.label_checks, mocks.label_bad = [], [], [], set()
     mocks.saved_reference, mocks.photo_label = REFERENCE, REFERENCE
-    mocks.photo_reads, mocks.saved_references = [], []
+    mocks.photo_reads, mocks.saved_references, mocks.brand_required = [], [], {}
 
-    def check_label(image, content_type, brand_name, reference=None):
+    def check_label(image, content_type, brand_name, reference=None, brand_required=False):
         key = image.decode().removeprefix("img:")
         mocks.label_checks.append((key, brand_name, reference))
+        mocks.brand_required[key] = brand_required
         if key in mocks.label_bad:
             return label_check.LabelCheck(ok=False, text_read="TADUNE", cost_usd=Decimal("0.004"))
         return label_check.LabelCheck(ok=True, text_read="J'ADUNÉ", cost_usd=Decimal("0.004"))
@@ -246,7 +247,7 @@ def test_every_photo_image_gets_a_label_check_against_brand_name(client, engine,
 
 
 def test_both_reads_are_logged_on_the_asset(client, engine, monkeypatch, photo_mocks):
-    def check_label(image, content_type, brand_name, reference=None):
+    def check_label(image, content_type, brand_name, reference=None, brand_required=False):
         return label_check.LabelCheck(ok=True, text_read="JADUNÉ", cost_usd=Decimal("0.008"),
                                        read_twice=True, second_read="J'ADUNÉ")
 
@@ -268,7 +269,7 @@ def test_label_outcome_is_saved_on_every_asset(client, engine, monkeypatch, phot
                                        read_twice=True, second_read="J'ADUNE"),
     }
     monkeypatch.setattr(label_check, "check_label",
-                        lambda image, content_type, brand_name, reference=None: checks[image.decode().removeprefix("img:")])
+                        lambda image, content_type, brand_name, reference=None, brand_required=False: checks[image.decode().removeprefix("img:")])
 
     body = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO}).json()["assets"]
 
@@ -286,6 +287,22 @@ def test_a_check_where_every_read_failed_saves_no_outcome(client, engine, monkey
     # The column's CHECK allows only match / unreadable / mismatch, so a failed check is NULL with label_ok False.
     assert [(a.label_ok, a.label_outcome) for a in saved_assets(engine)] == [(False, None)] * 3
     assert [a["needs_input"] for a in body] == [["label_mismatch"]] * 3
+
+
+def test_only_label_facing_formats_require_the_brand(client, photo_mocks):
+    client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
+
+    # ugc, lifestyle, flat_lay: the brand may be covered in all three
+    assert photo_mocks.brand_required == {"track": False, "beach": False, "city": False}
+
+
+def test_studio_hero_and_model_with_product_require_the_brand(client, mocks, photo_mocks):
+    mocks.plan = angle_plan(["moms", "gifting"], ["model_with_product", "studio_hero"])
+
+    resp = client.post("/creative/generate", json={**PAYLOAD, "angles": ["moms", "gifting"], "product_photo_path": PHOTO})
+
+    assert resp.status_code == 200, resp.text
+    assert photo_mocks.brand_required == {"a0": True, "a1": True}
 
 
 def test_label_mismatch_blocks_approval(client, engine, photo_mocks):

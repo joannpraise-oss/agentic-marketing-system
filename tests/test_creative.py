@@ -951,6 +951,28 @@ def test_people_prompts_keep_the_planners_skin_wording():
     assert finalize(planner, "model_with_product").startswith(planner)
 
 
+@pytest.mark.parametrize("planner, expected", [
+    ("Photo of a woman in a white robe, holding the bottle.", "Photo of a woman in a white linen shirt, holding the bottle."),
+    ("She wears a simple, elegant white bathrobe.", "She wears a simple, elegant white linen shirt."),
+    ("A woman wrapped in a fluffy towel holds the bottle.", "A woman wearing a linen shirt holds the bottle."),
+    ("Casual, elegant attire, like a light linen robe.", "Casual, elegant attire, like a light linen shirt."),
+])
+def test_people_prompts_swap_robes_and_worn_towels_for_everyday_clothing(planner, expected):
+    assert finalize(planner, "model_with_product").startswith(expected)
+
+
+def test_towels_as_decor_stay():
+    planner = "Photo of a woman holding the bottle; soft towels hang on the rack behind her."
+
+    assert finalize(planner, "ugc").startswith(planner)
+
+
+def test_product_only_prompts_keep_their_robes_and_towels():
+    planner = "Photo of the bottle on a folded towel beside a robe hook."
+
+    assert finalize(planner, "studio_hero").startswith(planner)
+
+
 def test_safer_retry_wording_has_no_skin_detail_and_swaps_risky_scene_words():
     planner = "Sensual photo of a woman in a tank top in her bathroom, bare shoulders, dewy skin, holding the bottle."
 

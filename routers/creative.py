@@ -90,14 +90,18 @@ def _save_label_reference(photo_path: str, text: str) -> None:
 
 
 def _check_labels(
-    images: list[higgsfield.GeneratedImage], brand_name: str, reference: str | None
+    images: list[tuple[higgsfield.GeneratedImage, str]], brand_name: str, reference: str | None
 ) -> list[label_check.LabelCheck]:
+    """Check each (image, format). Formats that must show the label also require the brand."""
     if not images:
         return []
+
+    def check(image: higgsfield.GeneratedImage, format: str) -> label_check.LabelCheck:
+        return label_check.check_label(image.data, image.content_type, brand_name, reference,
+                                       brand_required=format in creative.LABEL_FACING_FORMATS)
+
     with ThreadPoolExecutor(max_workers=len(images)) as pool:
-        return list(pool.map(
-            lambda image: label_check.check_label(image.data, image.content_type, brand_name, reference), images
-        ))
+        return list(pool.map(lambda pair: check(*pair), images))
 
 
 # Plain `def` (not async): every step blocks, so FastAPI runs this in its threadpool.
@@ -157,7 +161,8 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
     # Planning cost is split evenly across the assets we save.
     paid = [o for o in outcomes if o[1] is not None]
     planning_share = (planning_cost + reference_cost) / len(paid) if paid else Decimal("0")
-    checks = _check_labels([o[1] for o in paid], data.brand.brand_name, reference) if has_photo else [None] * len(paid)
+    checks = (_check_labels([(o[1], o[0].format) for o in paid], data.brand.brand_name, reference)
+              if has_photo else [None] * len(paid))
     assets = []
     for (item, image, url, _), check in zip(paid, checks):
         asset = Asset(

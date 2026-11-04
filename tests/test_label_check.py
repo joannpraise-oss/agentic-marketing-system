@@ -258,6 +258,33 @@ def test_without_a_reference_a_covered_brand_passes_but_a_garbled_one_doesnt(rea
     assert label_check.assess(read, "J’aduné", None)[0] == outcome
 
 
+@pytest.mark.parametrize("read, outcome", [
+    ("JB\nhydrating hair mist\n8 fl oz (237 mL)", "mismatch"),  # brand covered
+    ("", "mismatch"),  # label turned away
+    ("JB\nJ'ADUNÉ\nhydrating hair mist", "unreadable"),  # brand shows; the badge may be covered
+    ("JB\nJ'ADUNÉ\nBEAUTY\nPEPTIDE INFUSED\nhydrating hair mist\n8 fl oz (237 mL)", "match"),
+])
+def test_where_the_brand_is_required_a_missing_brand_is_a_mismatch(read, outcome):
+    assert label_check.assess(read, "J’aduné", REFERENCE, brand_required=True)[0] == outcome
+
+
+def test_required_brand_missing_from_both_reads_is_flagged(vision):
+    vision.text = "JB\nhydrating hair mist"
+
+    result = label_check.check_label(b"png", "image/png", "J’aduné", REFERENCE, brand_required=True)
+
+    assert not result.ok and result.outcome == "mismatch" and len(vision.calls) == 2
+    assert result.mismatched == ["brand: expected 'J’aduné'"]
+
+
+def test_required_brand_read_in_one_of_two_reads_passes(vision):
+    vision.texts = ["JB\nhydrating hair mist", "JB\nJ'ADUNÉ\nhydrating hair mist"]
+
+    result = label_check.check_label(b"png", "image/png", "J’aduné", REFERENCE, brand_required=True)
+
+    assert result.ok and result.outcome == "unreadable"
+
+
 def test_a_covered_label_passes_without_a_second_read(vision):
     vision.text = "JB\nhydrating hair mist"  # the hand covers the brand and the badge
 

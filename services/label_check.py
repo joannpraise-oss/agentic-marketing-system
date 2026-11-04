@@ -295,21 +295,32 @@ def read_label(image: bytes, content_type: str) -> tuple[str | None, Decimal]:
     return reading.label_text, creative.planning_cost(usage.prompt_tokens, usage.completion_tokens)
 
 
-def _wrong(text: str, brand_name: str, reference: str | None) -> list[str]:
-    """What visibly differs: a garbled brand, and words that aren't on the reference."""
-    wrong = [f"brand: expected {brand_name!r}"] if garbled_brand(text, brand_name) else []
+def _brand_problem(text: str, brand_name: str, brand_required: bool) -> list[str]:
+    """A garbled brand, or, where the format must show it, a brand that isn't read exactly."""
+    if garbled_brand(text, brand_name) or (brand_required and not brand_matches(text, brand_name)):
+        return [f"brand: expected {brand_name!r}"]
+    return []
+
+
+def _wrong(text: str, brand_name: str, reference: str | None, brand_required: bool = False) -> list[str]:
+    """What visibly differs: a garbled (or required but missing) brand, and words not on the reference."""
+    wrong = _brand_problem(text, brand_name, brand_required)
     return wrong + (label_differences(reference, text) if reference else [])
 
 
-def assess(text: str | None, brand_name: str, reference: str | None) -> tuple[str, list[str]]:
+def assess(
+    text: str | None, brand_name: str, reference: str | None, brand_required: bool = False
+) -> tuple[str, list[str]]:
     """One read's outcome and what differs.
 
     Only visible text that is wrong is a mismatch. Text that is covered, out of view or too small
     to read passes as unreadable; match means every word, brand included, was read exactly.
+    brand_required: the format must show the brand (studio_hero, model_with_product), so a brand
+    that is covered or out of view is a mismatch too.
     """
     if text is None:
         return FAILED, []
-    mismatched = _wrong(text, brand_name, reference)
+    mismatched = _wrong(text, brand_name, reference, brand_required)
     if mismatched:
         return MISMATCH, mismatched
     complete = (brand_matches(text, brand_name) and not readable_tokens(text)[1]
@@ -317,16 +328,19 @@ def assess(text: str | None, brand_name: str, reference: str | None) -> tuple[st
     return (MATCH if complete else UNREADABLE), []
 
 
-def combine_reads(first: str, second: str, brand_name: str, reference: str | None) -> tuple[str, list[str]]:
+def combine_reads(
+    first: str, second: str, brand_name: str, reference: str | None, brand_required: bool = False
+) -> tuple[str, list[str]]:
     """The outcome of two reads that both found a problem.
 
     A wrong word only counts if both reads saw the same one: on garbled small print the reads
     guess differently ("POTTO INTEIRO", then "POTION INEDITE"), which means it can't be read.
-    A word left out never counts (see assess). The brand only counts as garbled if both reads
-    garbled it.
+    A word left out never counts (see assess). The brand only counts as wrong (garbled, or
+    missing where it is required) if both reads found it wrong.
     """
-    garbled = garbled_brand(first, brand_name) and garbled_brand(second, brand_name)
-    mismatched = [f"brand: expected {brand_name!r}"] if garbled else []
+    wrong_in_both = (_brand_problem(first, brand_name, brand_required)
+                     and _brand_problem(second, brand_name, brand_required))
+    mismatched = [f"brand: expected {brand_name!r}"] if wrong_in_both else []
     if reference:
         want = Counter(readable_tokens(reference)[0])
         extra_first = Counter(readable_tokens(first)[0]) - want
@@ -335,10 +349,13 @@ def combine_reads(first: str, second: str, brand_name: str, reference: str | Non
     return (MISMATCH, mismatched) if mismatched else (UNREADABLE, [])
 
 
-def check_label(image: bytes, content_type: str, brand_name: str, reference: str | None = None) -> LabelCheck:
+def check_label(
+    image: bytes, content_type: str, brand_name: str, reference: str | None = None, brand_required: bool = False
+) -> LabelCheck:
     """Check a generated image's label: match, unreadable (passes) or mismatch (flagged).
 
-    Covered or out-of-view text passes as unreadable; only visible text that is wrong is flagged.
+    Covered or out-of-view text passes as unreadable; only visible text that is wrong is flagged,
+    and, with brand_required, a brand that doesn't show.
 
     The reader misreads small text (it dropped a clearly printed apostrophe), so a read that
     disagrees, or fails, is retried once, and the image is flagged only if both reads find the
@@ -352,15 +369,15 @@ def check_label(image: bytes, content_type: str, brand_name: str, reference: str
         image, content_type = crop, "image/png"
     text, read_cost = read_label(image, content_type)  # the image is already paid for: flag it, don't lose it
     cost += read_cost
-    outcome, mismatched = assess(text, brand_name, reference)
+    outcome, mismatched = assess(text, brand_name, reference, brand_required)
     if outcome in (MATCH, UNREADABLE):
         return LabelCheck(ok=True, text_read=text, cost_usd=cost, outcome=outcome, cropped=bool(crop))
     second, second_cost = read_label(image, content_type)
-    second_outcome, second_mismatched = assess(second, brand_name, reference)
+    second_outcome, second_mismatched = assess(second, brand_name, reference, brand_required)
     if second_outcome in (MATCH, UNREADABLE):
         final, mismatched = second_outcome, []
     elif text is not None and second is not None:
-        final, mismatched = combine_reads(text, second, brand_name, reference)
+        final, mismatched = combine_reads(text, second, brand_name, reference, brand_required)
     else:
         final = MISMATCH if MISMATCH in (outcome, second_outcome) else FAILED
         mismatched = second_mismatched or mismatched

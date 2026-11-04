@@ -323,6 +323,16 @@ WARDROBE_FRAMING = (
     "The person is fully clothed in everyday wear suited to the brand (e.g. a linen shirt or knit top), "
     "framed head-and-shoulders or waist-up."
 )
+# The planner keeps dressing people in robes and towels (#33, #40), which the image follows over
+# WARDROBE_FRAMING and which risks the content filter, so every people prompt swaps them for
+# everyday clothing. Towels as decor ("soft towels on the rack") stay.
+WARDROBE_SWAPS = [
+    (re.compile(p, re.IGNORECASE), replacement) for p, replacement in [
+        (r"\b(?:wrapped in|wearing|in|dressed in) (?:an? |her |his |their )?(?:[\w-]+ ){0,2}towels?\b",
+         "wearing a linen shirt"),
+        (r"\b(?:linen |cotton )?(?:bath)?robes?\b", "linen shirt"),
+    ]
+]
 # The retry after a content-filter rejection: no skin wording at all, and risky scene words swapped.
 SAFER_REALISM_PROMPT = "Candid smartphone photo, unretouched, no beauty filter, natural light."
 SAFER_SWAPS = [
@@ -369,6 +379,13 @@ def product_rules(people: bool, product_size: Optional[str], format: str = "") -
     return " ".join(rules + [HOLD_LOWER_HALF] if people and format not in IN_USE_FORMATS else rules)
 
 
+def everyday_wardrobe(prompt: str) -> str:
+    """The planner's scene with robes and worn towels swapped for everyday clothing."""
+    for pattern, replacement in WARDROBE_SWAPS:
+        prompt = pattern.sub(replacement, prompt)
+    return prompt
+
+
 def safer_scene(prompt: str) -> str:
     """The planner's scene with the words most likely to trip a content filter swapped or removed."""
     for pattern, replacement in SAFER_SWAPS:
@@ -386,6 +403,7 @@ def finalize_image_prompt(
     """
     people = shows_people(format, prompt)
     if people:
+        prompt = everyday_wardrobe(prompt)
         if safer:
             prompt = safer_scene(prompt)
         prompt = f"{prompt} {SAFER_REALISM_PROMPT if safer else REALISM_PROMPT} {WARDROBE_FRAMING}"

@@ -41,7 +41,8 @@ insensitive), and flag mismatches so the asset can't be approved as-is.
 label with it. Three outcomes: an exact match passes; visible text that differs
 in any word, number or punctuation is `label_mismatch`; text that is covered,
 out of view or too small to read passes as "unreadable". Key text such as the
-brand may be covered, but never garbled. Both
+brand may be covered in ugc and lifestyle, but never garbled; in studio_hero and
+model_with_product the brand must show, so a missing brand is `label_mismatch`. Both
 reads see the product cropped (located with a labelled grid) and upscaled. A read
 that disagrees is retried once; both reads go in `asset.label_read` and the
 outcome in `asset.label_outcome` (NULL when no read worked). With two
