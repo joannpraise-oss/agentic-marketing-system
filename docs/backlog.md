@@ -37,17 +37,31 @@ insensitive), and flag mismatches so the asset can't be approved as-is.
 ## Product label check: what's still missing
 
 `services/label_check.py` reads the label off the uploaded photo once (saved as
-`labels/<photo>.txt` in the private bucket) and compares every word of each
-generated image's label with it, plus `brand_name`. A read that disagrees is
-retried once, and the image is flagged only if both reads disagree; both reads
-go in `asset.label_read`. Not covered yet:
+`labels/<photo>.txt` in the private bucket) and compares each generated image's
+label with it. Three outcomes: an exact match passes; readable text that differs
+in any word, number or punctuation is `label_mismatch`; text too small to read
+passes as "unreadable". The brand name must always be readable and exact. A read
+that disagrees is retried once; both reads go in `asset.label_read`. Not covered yet:
 
+- The outcome (match / unreadable / mismatch) isn't stored: `label_ok` is True
+  for both match and unreadable. Storing it needs a column (schema change: ask).
 - The reader can still misread twice, on the generated image or on the
   reference photo itself, so a correct image can be flagged. There's no way to
   override a flag after a person has checked the image, or to correct a
   misread reference; today the fix is to regenerate, or upload a sharper photo.
 - Which words mismatched is only logged, not stored on the asset.
 - Reading the photo at upload (~$0.004) isn't counted against the spend caps.
+
+## Premium option: 2k product images
+
+At true real-world size, a hand-held 7 in bottle's small print (ingredient
+badges, "8 fl oz (237 mL)") is only a few pixels tall at Marketing Studio's 1k,
+so it garbles or can't be read. 2k would make it legible. Offer it later as a
+premium setting (e.g. per request or per plan), not the default:
+
+- Price `resolution: "2k"` with the free `/estimate` first and add it to
+  `higgsfield.product_image_cost`, so the spend check reserves the real price.
+- Label reads at 2k cost more too (more image tokens): re-measure `RESERVE_USD`.
 
 ## Phase 4: report creative test results by the right key
 

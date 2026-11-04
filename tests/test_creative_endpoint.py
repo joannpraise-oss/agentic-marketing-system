@@ -1,10 +1,11 @@
 import time
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from types import SimpleNamespace
 
 import pytest
 from sqlmodel import Session, select
 
+from core.errors import CONTENT_FILTERED_MESSAGE
 from core.placeholders import PlaceholdersRemainError
 from db.models import Asset
 from services import creative, higgsfield, label_check, storage
@@ -65,7 +66,8 @@ def mocks(monkeypatch):
 
 def key_of(prompt):
     """make_item prompts end with a short key ("track", "beach", "city"); the router appends its rules after it."""
-    for rule in (creative.REALISM_PROMPT, creative.ONE_PRODUCT, creative.LABEL_FACING_RULE, " The product label"):
+    for rule in (creative.REALISM_PROMPT, creative.SAFER_REALISM_PROMPT, creative.ONE_PRODUCT,
+                 creative.LABEL_FACING_RULE, " The product label"):
         prompt = prompt.split(" " + rule.strip())[0]
     return prompt.split()[-1]
 
@@ -211,8 +213,9 @@ def test_photo_run_uses_marketing_studio_with_the_signed_url_and_label(client, e
     for asset in assets:
         assert asset.model == "marketing-studio/image"
         assert asset.provider == "higgsfield"
-        # $0.040 image + $0.004 label check + $0.00105 / 3 planning = $0.04435, rounded to 4 places
-        assert asset.cost_usd == Decimal("0.0444")
+        # the image priced from the prompt sent + $0.004 label check + $0.00105 / 3 planning
+        expected = higgsfield.product_image_cost(asset.prompt) + Decimal("0.004") + Decimal("0.00035")
+        assert asset.cost_usd == expected.quantize(Decimal("0.0001"), ROUND_HALF_UP)
 
 
 def test_only_people_formats_get_the_label_facing_rule(client, photo_mocks):
@@ -305,6 +308,23 @@ def test_spend_estimate_uses_the_higher_price_only_with_a_photo(client, engine, 
     assert client.post("/creative/generate", json=PAYLOAD).status_code == 200
 
 
+def test_unusually_long_prompts_are_rechecked_against_the_cap_before_generating(client, engine, photo_mocks):
+    long = make_plan()
+    for item in long.items:
+        item.prompt += " soft morning light" * 400  # ~7200 more characters each: well above the reserve
+    photo_mocks.plan = long
+    with Session(engine) as session:
+        # The reserve (3 x ($0.0456 + 2 x $0.005) + $0.015 = $0.18) fits under $5.00; these prompts don't.
+        session.add(make_asset(cost_usd=Decimal("4.81")))
+        session.commit()
+
+    resp = client.post("/creative/generate", json={**PAYLOAD, "product_photo_path": PHOTO})
+
+    assert resp.status_code == 402
+    assert len(photo_mocks.planner_calls) == 1  # passed the first check; blocked once the prompts were known
+    assert photo_mocks.product_calls == []  # nothing generated
+
+
 def test_missing_photo_is_400_before_anything_is_spent(client, monkeypatch, photo_mocks):
     def not_found(bucket, path):
         raise storage.StorageObjectNotFound("Could not sign the file URL (status 400).")
@@ -365,7 +385,7 @@ def test_product_size_is_rejected_for_other_offer_types(client, photo_mocks):
 
 @pytest.mark.parametrize("error, code", [
     (higgsfield.HiggsfieldTimeout("Image generation did not finish within 120s."), "image_timeout"),
-    (higgsfield.HiggsfieldError("Image generation ended as 'nsfw'."), "image_provider_error"),
+    (higgsfield.HiggsfieldError("Image generation ended as 'failed'."), "image_provider_error"),
 ])
 def test_one_failed_image_returns_200_with_drafts_and_failed_list(client, engine, mocks, error, code):
     mocks.fail["beach"] = error
@@ -381,6 +401,63 @@ def test_one_failed_image_returns_200_with_drafts_and_failed_list(client, engine
     assert sorted(a.format for a in assets) == ["flat_lay", "ugc"]
     # Planning cost is spread over the 2 saved assets: 0.006 + 0.00105 / 2 = 0.006525
     assert all(a.cost_usd == Decimal("0.0065") for a in assets)
+
+
+FILTERED = higgsfield.HiggsfieldContentFiltered("Image generation ended as 'nsfw'.")
+
+
+def test_content_filtered_image_is_retried_once_with_safer_wording(client, engine, mocks, monkeypatch):
+    sent = []
+    real = higgsfield.generate_image
+
+    def generate_image(prompt):
+        sent.append(prompt)
+        if key_of(prompt) == "track" and creative.SAFER_REALISM_PROMPT not in prompt:
+            raise FILTERED
+        return real(prompt)
+
+    monkeypatch.setattr(higgsfield, "generate_image", generate_image)
+
+    body = client.post("/creative/generate", json=PAYLOAD).json()
+
+    assert body["failed"] == [] and len(body["assets"]) == 3
+    track = [p for p in sent if key_of(p) == "track"]
+    assert len(track) == 2 and creative.REALISM_PROMPT in track[0] and creative.SAFER_REALISM_PROMPT in track[1]
+    ugc = next(a for a in saved_assets(engine) if a.format == "ugc")
+    assert ugc.prompt == track[1]  # saved as actually sent
+    assert ugc.cost_usd == Decimal("0.0064")  # one image: the rejection wasn't charged
+
+
+def test_image_filtered_twice_is_content_filtered_with_a_friendly_message(client, engine, mocks):
+    mocks.fail["beach"] = FILTERED
+
+    body = client.post("/creative/generate", json=PAYLOAD).json()
+
+    assert mocks.generated.count("beach") == 2  # one retry, no more
+    assert body["failed"] == [{
+        "format": "lifestyle", "code": "content_filtered", "reason": CONTENT_FILTERED_MESSAGE, "asset_id": None,
+    }]
+    assert "weren't charged" in CONTENT_FILTERED_MESSAGE
+    assert len(saved_assets(engine)) == 2
+
+
+def test_every_image_filtered_is_422_content_filtered(client, engine, mocks):
+    mocks.fail.update({"track": FILTERED, "beach": FILTERED, "city": FILTERED})
+
+    resp = client.post("/creative/generate", json=PAYLOAD)
+
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "content_filtered"
+    assert resp.json()["detail"] == CONTENT_FILTERED_MESSAGE
+    assert len(mocks.generated) == 6 and saved_assets(engine) == []
+
+
+def test_other_provider_failures_are_not_retried(client, mocks):
+    mocks.fail["beach"] = higgsfield.HiggsfieldError("Image generation ended as 'failed'.")
+
+    client.post("/creative/generate", json=PAYLOAD)
+
+    assert mocks.generated.count("beach") == 1
 
 
 def test_failed_upload_returns_200_and_points_at_the_saved_paid_asset(client, engine, mocks):
@@ -487,6 +564,17 @@ def test_one_creative_per_angle_and_angle_saved(client, engine, mocks):
     assert [a.angle for a in saved_assets(engine)] == ANGLES[:2]
     assert len(mocks.generated) == 2
     assert "1. moms" in mocks.planner_calls[0]["messages"][0]["content"]
+
+
+def test_single_angle_request_makes_one_creative_even_if_the_model_omits_the_angle(client, engine, mocks):
+    mocks.plan = angle_plan([None], ["model_with_product"])  # the live failure: `angle` left out
+
+    resp = client.post("/creative/generate", json={**PAYLOAD, "angles": ["peptide care"]})
+
+    assert resp.status_code == 200, resp.text
+    assert [(a["format"], a["angle"]) for a in resp.json()["assets"]] == [("model_with_product", "peptide care")]
+    assert [a.angle for a in saved_assets(engine)] == ["peptide care"]
+    assert len(mocks.planner_calls) == 1 and len(mocks.generated) == 1
 
 
 def test_without_angles_assets_have_no_angle(client, engine, mocks):
@@ -647,8 +735,10 @@ def test_older_photo_is_read_once_and_its_reference_saved(client, engine, photo_
     assert photo_mocks.photo_reads == [b"photo-bytes"]
     assert photo_mocks.saved_references == [(PHOTO, REFERENCE)]  # saved as read; corrected per run
     assert {check[2] for check in photo_mocks.label_checks} == {CORRECTED}
-    # $0.040 image + $0.004 check + ($0.00105 planning + $0.003 photo read) / 3 = $0.04535
-    assert {asset.cost_usd for asset in saved_assets(engine)} == {Decimal("0.0454")}
+    # the image + $0.004 check + ($0.00105 planning + $0.003 photo read) / 3
+    for asset in saved_assets(engine):
+        expected = higgsfield.product_image_cost(asset.prompt) + Decimal("0.004") + Decimal("0.00135")
+        assert asset.cost_usd == expected.quantize(Decimal("0.0001"), ROUND_HALF_UP)
 
 
 def test_saved_reference_means_no_new_read_of_the_photo(client, photo_mocks):

@@ -128,7 +128,9 @@ def test_a_failed_check_flags_the_image_instead_of_raising(vision):
 
     result = label_check.check_label(b"png", "image/png", "J’aduné")
 
-    assert result == label_check.LabelCheck(ok=False, text_read=None, cost_usd=Decimal("0"), read_twice=True)
+    assert result == label_check.LabelCheck(
+        ok=False, text_read=None, cost_usd=Decimal("0"), read_twice=True, outcome="failed"
+    )
     assert len(vision.calls) == 2 and result.reads_logged is None
 
 
@@ -157,11 +159,21 @@ def test_reference_without_anything_like_the_brand_is_left_alone():
     assert label_check.reference_label("PEPTIDE INFUSED\nhair mist", "J’aduné") == "PEPTIDE INFUSED\nhair mist"
 
 
-def test_label_differences_ignore_order_case_punctuation_and_line_breaks():
+def test_label_differences_ignore_order_case_apostrophe_style_and_line_breaks():
     reference = "JB J’aduné BEAUTY PEPTIDE INFUSED hydrating hair mist 8 fl oz (237 mL)"
-    read = "JB\nJ'ADUNÉ\nBEAUTY\nhydrating hair mist\nPEPTIDE INFUSED\n8 fl oz (237 mL)."
+    read = "JB\nJ'ADUNÉ\nBEAUTY\nhydrating hair mist\nPEPTIDE INFUSED\n8 fl oz (237 mL)"
 
     assert label_check.label_differences(reference, read) == []
+
+
+@pytest.mark.parametrize("read, differences", [
+    ("8 fl oz (237 mL).", ["missing: ml)", "extra: ml)."]),  # punctuation
+    ("8 fl oz (236 mL)", ["missing: (237", "extra: (236"]),  # a number
+    ("8 fl oz / 237 mL", ["missing: (237", "missing: ml)", "extra: /", "extra: 237", "extra: ml"]),
+    ("8 fl oz (237 mL) PEPTIDE-INFUSED", ["extra: peptide-infused"]),  # an invented word
+])
+def test_any_readable_difference_counts(read, differences):
+    assert label_check.label_differences("8 fl oz (237 mL)", read) == differences
 
 
 def test_label_differences_name_each_missing_and_invented_word():
@@ -198,6 +210,60 @@ def test_brand_is_still_checked_against_brand_name_with_a_reference(vision):
     result = label_check.check_label(b"png", "image/png", "J’aduné", "JB TADUNÉ BEAUTY")
 
     assert not result.ok and result.mismatched == ["brand: expected 'J’aduné'"]
+
+
+# --- three outcomes: match, unreadable (passes), mismatch (flagged) ---
+
+REFERENCE = "JB J’aduné BEAUTY PEPTIDE INFUSED hydrating hair mist 8 fl oz (237 mL)"
+
+
+@pytest.mark.parametrize("read, outcome", [
+    ("JB\nJ'ADUNÉ\nBEAUTY\nPEPTIDE INFUSED\nhydrating hair mist\n8 fl oz (237 mL)", "match"),
+    # small print too small to read: passes, isn't flagged
+    ("JB\nJ'ADUNÉ\nBEAUTY\n[unreadable]\nhydrating hair mist\n[unreadable]", "unreadable"),
+    ("JB\nJ'ADUNÉ\nBEAUTY\nPEP??DE INFUSED\nhydrating hair mist\n8 fl oz (2?7 mL)", "unreadable"),
+    # readable but different: flagged, even next to unreadable text
+    ("JB\nJ'ADUNÉ\nBEAUTY\n[unreadable]\nhydrating hair mist\n8 fl oz (236 mL)", "mismatch"),
+    ("JB\nJ'ADUNÉ\nBEAUTY\nhydrating hair mist\n8 fl oz (237 mL)", "mismatch"),  # badge gone, nothing unreadable
+    # the brand must always be readable and exact
+    ("JB\nJ'ADUN?\nBEAUTY\n[unreadable]", "mismatch"),
+    ("JB\n[unreadable]\nBEAUTY\nPEPTIDE INFUSED\nhydrating hair mist\n8 fl oz (237 mL)", "mismatch"),
+    ("JB\nJADUNÉ\nBEAUTY\nPEPTIDE INFUSED\nhydrating hair mist\n8 fl oz (237 mL)", "mismatch"),
+])
+def test_assess_has_three_outcomes(read, outcome):
+    assert label_check.assess(read, "J’aduné", REFERENCE)[0] == outcome
+
+
+def test_unreadable_small_print_passes_without_a_second_read(vision):
+    vision.text = "JB\nJ'ADUNÉ\nBEAUTY\n[unreadable]\nhydrating hair mist\n[unreadable]"
+
+    result = label_check.check_label(b"png", "image/png", "J’aduné", REFERENCE)
+
+    assert result.ok and result.outcome == "unreadable" and result.mismatched == []
+    assert len(vision.calls) == 1
+
+
+def test_mismatch_then_unreadable_passes_as_unreadable(vision):
+    vision.texts = ["JB\nJ'ADUNÉ\nBEAUTY\n8 fl oz (236 mL)", "JB\nJ'ADUNÉ\nBEAUTY\n[unreadable]"]
+
+    result = label_check.check_label(b"png", "image/png", "J’aduné", REFERENCE)
+
+    assert result.ok and result.outcome == "unreadable"
+
+
+def test_readable_difference_in_both_reads_is_a_mismatch(vision):
+    vision.text = "JB\nJ'ADUNÉ\nBEAUTY\n[unreadable]\nhydrating hair mist\n8 fl oz (236 mL)"
+
+    result = label_check.check_label(b"png", "image/png", "J’aduné", REFERENCE)
+
+    assert not result.ok and result.outcome == "mismatch"
+    assert result.mismatched == ["extra: (236"]
+
+
+def test_reader_is_asked_to_mark_unreadable_text(vision):
+    label_check.check_label(b"png", "image/png", "J’aduné")
+
+    assert "[unreadable]" in vision.calls[0]["messages"][0]["content"][0]["text"]
 
 
 def test_read_label_returns_none_instead_of_raising(vision):

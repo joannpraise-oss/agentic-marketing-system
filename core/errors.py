@@ -9,11 +9,16 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from core.placeholders import PlaceholdersRemainError
-from services.higgsfield import HiggsfieldAuthError, HiggsfieldError, HiggsfieldTimeout
+from services.higgsfield import HiggsfieldAuthError, HiggsfieldContentFiltered, HiggsfieldError, HiggsfieldTimeout
 from services.product_photo import ProductPhotoError
 from services.storage import StorageError
 
 logger = logging.getLogger(__name__)
+
+CONTENT_FILTERED_MESSAGE = (
+    "The image service's safety filter declined this image, even after a retry with safer wording. "
+    "You weren't charged for it. Try rewording the brief or choosing another format."
+)
 
 DEFAULT_RETRY_AFTER = 30
 
@@ -95,6 +100,11 @@ def register_error_handlers(app: FastAPI) -> None:
         )
 
     # Handlers match on the exception's MRO, so the Higgsfield subclasses win over HiggsfieldError.
+    @app.exception_handler(HiggsfieldContentFiltered)
+    async def image_content_filtered(request: Request, exc: HiggsfieldContentFiltered):
+        logger.warning("Every image was rejected by the content filter, after a safer retry (not charged)")
+        return error_response(request, 422, "content_filtered", CONTENT_FILTERED_MESSAGE)
+
     @app.exception_handler(HiggsfieldTimeout)
     async def image_timeout(request: Request, exc: HiggsfieldTimeout):
         return error_response(request, 504, "image_timeout", "Image generation timed out. Please try again.")

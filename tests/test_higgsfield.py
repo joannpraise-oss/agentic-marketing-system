@@ -130,8 +130,17 @@ def test_product_image_failure_never_logs_the_signed_url(fake, caplog):
     assert "SECRET-TOKEN" not in caplog.text and "SECRET-TOKEN" not in str(exc.value)
 
 
-def test_product_image_cost_covers_long_prompts(fake):
-    assert higgsfield.estimate_product_image_cost() == Decimal("0.040")
+# Higgsfield's own /estimate prices on 2026-11-03, by prompt length.
+@pytest.mark.parametrize("chars, higgsfield_usd", [(1000, "0.035"), (1500, "0.037"), (1897, "0.039"),
+                                                   (2398, "0.042"), (3795, "0.049")])
+def test_product_image_cost_matches_or_slightly_exceeds_the_real_price(chars, higgsfield_usd):
+    cost = higgsfield.product_image_cost("x" * chars)
+
+    assert Decimal(higgsfield_usd) <= cost <= Decimal(higgsfield_usd) + Decimal("0.0015")
+
+
+def test_product_image_reserve_covers_a_3000_character_prompt(fake):
+    assert higgsfield.estimate_product_image_cost() == higgsfield.product_image_cost("x" * 3000) == Decimal("0.0456")
     assert fake.calls == []
 
 
@@ -168,7 +177,17 @@ def test_non_completed_terminal_status_raises_provider_error(fake, status):
         run(FakeClock())
 
     assert not isinstance(info.value, higgsfield.HiggsfieldTimeout)
+    assert isinstance(info.value, higgsfield.HiggsfieldContentFiltered) is (status == "nsfw")
     assert status in str(info.value)
+
+
+def test_content_filter_rejection_logs_that_it_was_not_charged(fake, caplog):
+    fake.statuses = ["nsfw"]
+
+    with caplog.at_level(logging.WARNING), pytest.raises(higgsfield.HiggsfieldContentFiltered):
+        run(FakeClock())
+
+    assert "content filter" in caplog.text and "charged: no" in caplog.text
 
 
 @pytest.mark.parametrize("http_status, error", [(401, higgsfield.HiggsfieldAuthError), (500, higgsfield.HiggsfieldError)])

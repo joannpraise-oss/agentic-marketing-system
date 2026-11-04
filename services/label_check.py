@@ -1,6 +1,7 @@
 """Read product labels: once off the uploaded photo (the reference), then off each generated image."""
 import base64
 import logging
+import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
@@ -19,6 +20,9 @@ LABEL_MODEL = creative.PLANNING_MODEL  # same gpt-4o-mini pricing as planning_co
 RESERVE_USD = Decimal("0.005")
 APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "´": "'", "`": "'"})
 WORD_PUNCTUATION = ".,;:!()[]{}\"“”«»"
+# The reader's marks for text it can see but not read: a whole run, or single characters.
+UNREADABLE_MARK = re.compile(r"\[\s*unreadable[^\]]*\]", re.IGNORECASE)
+UNREADABLE_CHAR = "?"
 # How close a word read off the reference photo must be to brand_name to count as a misread of it.
 BRAND_SIMILARITY = 0.6
 
@@ -27,13 +31,17 @@ BRAND_SIMILARITY = 0.6
 PROMPT = (
     "Transcribe all text printed on the product's label in this image, exactly as it appears, "
     "in reading order, character for character, including accents and apostrophes. "
-    "Do not correct spelling or guess: write ? for any character you can't read. "
-    "Return an empty string if no label text is legible."
+    "Do not correct spelling or guess: write ? for any character you can't make out, and write "
+    "[unreadable] in place of any text that is there but too small or blurry to read at all. "
+    "Return an empty string if the product has no label text."
 )
 
 
 class LabelReading(BaseModel):
     label_text: str = Field(description="The label text exactly as printed, or empty if none is legible.")
+
+
+MATCH, MISMATCH, UNREADABLE, FAILED = "match", "mismatch", "unreadable", "failed"
 
 
 @dataclass
@@ -44,6 +52,14 @@ class LabelCheck:
     mismatched: list[str] = field(default_factory=list)  # e.g. "missing: peptide", "extra: puré"
     read_twice: bool = False  # the first read didn't pass, so the image was read again
     second_read: str | None = None  # None when not taken, or when it failed
+    # match: every word read exactly. unreadable: the brand is exact, the rest that could be read
+    # matches, and some small text couldn't be read (passes). mismatch: something readable differs.
+    # failed: no read worked.
+    outcome: str | None = None
+
+    def __post_init__(self):
+        if self.outcome is None:
+            self.outcome = MATCH if self.ok else MISMATCH
 
     @property
     def reads_logged(self) -> str | None:
@@ -93,11 +109,24 @@ def reference_label(label_text: str, brand_name: str) -> str:
     return " ".join(tokens[:start] + brand + tokens[start + len(brand):])
 
 
+def readable_tokens(text: str) -> tuple[list[str], bool]:
+    """The words read in full, with their punctuation, and whether any text was marked unreadable."""
+    tokens = _tokens(UNREADABLE_MARK.sub(" ", text))
+    readable = [t for t in tokens if UNREADABLE_CHAR not in t]
+    return readable, bool(UNREADABLE_MARK.search(text)) or len(readable) < len(tokens)
+
+
 def label_differences(reference: str, label_text: str) -> list[str]:
-    """Words missing from, or added to, the label compared with the reference; order is ignored."""
-    want, got = Counter(_words(reference)), Counter(_words(label_text))
-    return ([f"missing: {w}" for w in sorted((want - got).elements())]
-            + [f"extra: {w}" for w in sorted((got - want).elements())])
+    """Readable words that differ from the reference, punctuation included; order and case are ignored.
+
+    A reference word that wasn't read is only a difference if nothing was marked unreadable:
+    otherwise it is taken to be in the text too small to read.
+    """
+    want_tokens, _ = readable_tokens(reference)
+    got_tokens, unreadable = readable_tokens(label_text)
+    want, got = Counter(want_tokens), Counter(got_tokens)
+    missing = [] if unreadable else [f"missing: {w}" for w in sorted((want - got).elements())]
+    return missing + [f"extra: {w}" for w in sorted((got - want).elements())]
 
 
 def read_label(image: bytes, content_type: str) -> tuple[str | None, Decimal]:
@@ -121,31 +150,37 @@ def read_label(image: bytes, content_type: str) -> tuple[str | None, Decimal]:
     return reading.label_text, creative.planning_cost(usage.prompt_tokens, usage.completion_tokens)
 
 
-def _mismatches(text: str | None, brand_name: str, reference: str | None) -> list[str] | None:
-    """What's wrong with one read, [] if it passes; None if the read failed."""
+def assess(text: str | None, brand_name: str, reference: str | None) -> tuple[str, list[str]]:
+    """One read's outcome and what differs. The brand must always be readable and exact."""
     if text is None:
-        return None
+        return FAILED, []
     mismatched = [] if brand_matches(text, brand_name) else [f"brand: expected {brand_name!r}"]
     if reference:
         mismatched += label_differences(reference, text)
-    return mismatched
+    if mismatched:
+        return MISMATCH, mismatched
+    return (UNREADABLE if readable_tokens(text)[1] else MATCH), []
 
 
 def check_label(image: bytes, content_type: str, brand_name: str, reference: str | None = None) -> LabelCheck:
-    """Check a generated image's label: brand_name must be on it, and with a reference, every word must match.
+    """Check a generated image's label: match, unreadable (passes) or mismatch (flagged).
 
     The reader misreads small text (it dropped a clearly printed apostrophe), so a read that
     disagrees, or fails, is retried once, and the image is flagged only if both reads disagree.
     Never raises: failed reads come back as not ok, so the asset still needs review.
     """
     text, cost = read_label(image, content_type)  # the image is already paid for: flag it, don't lose it
-    if _mismatches(text, brand_name, reference) == []:
-        return LabelCheck(ok=True, text_read=text, cost_usd=cost)
+    outcome, mismatched = assess(text, brand_name, reference)
+    if outcome in (MATCH, UNREADABLE):
+        return LabelCheck(ok=True, text_read=text, cost_usd=cost, outcome=outcome)
     second, second_cost = read_label(image, content_type)
-    first_wrong, second_wrong = _mismatches(text, brand_name, reference), _mismatches(second, brand_name, reference)
-    ok = second_wrong == []
-    mismatched = [] if ok else (second_wrong or first_wrong or [])
-    if not ok:
-        logger.info("Label mismatch: read %r, then %r; %s", text, second, mismatched)
+    second_outcome, second_mismatched = assess(second, brand_name, reference)
+    ok = second_outcome in (MATCH, UNREADABLE)
+    if ok:
+        final, mismatched = second_outcome, []
+    else:
+        final = MISMATCH if MISMATCH in (outcome, second_outcome) else FAILED
+        mismatched = second_mismatched or mismatched
+        logger.info("Label %s: read %r, then %r; %s", final, text, second, mismatched)
     return LabelCheck(ok=ok, text_read=text, cost_usd=cost + second_cost, mismatched=mismatched,
-                      read_twice=True, second_read=second)
+                      read_twice=True, second_read=second, outcome=final)

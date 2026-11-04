@@ -329,6 +329,24 @@ def test_angle_plan_must_match_requested_angles_in_order(angles):
         )
 
 
+@pytest.mark.parametrize("returned", [None, "", "Peptide care for soft, hydrated hair "])
+def test_single_angle_plan_fills_in_an_omitted_angle(returned):
+    # The live failure: one angle requested, the model left `angle` out.
+    spec = creative.PlanSpec(count=1, angles=("peptide care for soft, hydrated hair",))
+
+    plan = creative.CreativePlan.model_validate(
+        {"items": angle_items([returned], ["model_with_product"])}, context={"spec": spec}
+    )
+
+    assert [i.angle for i in plan.items] == ["peptide care for soft, hydrated hair"]
+
+
+def test_single_angle_plan_still_rejects_a_different_angle():
+    spec = creative.PlanSpec(count=1, angles=("moms",))
+    with pytest.raises(ValidationError, match="one creative per angle"):
+        creative.CreativePlan.model_validate({"items": angle_items(["gifting"], ["ugc"])}, context={"spec": spec})
+
+
 def test_plan_without_angles_drops_any_angle_the_model_invents():
     plan = creative.CreativePlan.model_validate(
         {"items": angle_items(["x", "y", "z"], ["ugc", "lifestyle", "flat_lay"])}
@@ -747,7 +765,9 @@ def test_realism_rule_is_in_every_plan(offer_type):
         "ugc, model_with_product, lifestyle with people, before_after, experience, narrator",
         "People must look like real, photographed humans, not AI-perfect.",
         "visible pores and fine texture",
-        "freckles, moles, small spots, faint veins, or piercings",
+        "freckles, moles, small spots, or piercings",
+        "fully clothed in everyday wear suited to the brand (e.g. a linen shirt or knit top)",
+        "framed head-and-shoulders or waist-up",
         "varied skin color within the face",
         "Avoid airbrushed or plastic skin, perfect symmetry, and over-smoothed hair.",
         "don't give everyone the same features",
@@ -782,8 +802,8 @@ def test_props_rule_is_left_out_when_there_is_no_product():
 
 # --- rules appended to every image prompt ---
 
-def finalize(prompt, format, offer_type="physical_product", has_photo=False, product_size=None):
-    return creative.finalize_image_prompt(prompt, format, offer_type, "J’aduné", has_photo, product_size)
+def finalize(prompt, format, offer_type="physical_product", has_photo=False, product_size=None, safer=False):
+    return creative.finalize_image_prompt(prompt, format, offer_type, "J’aduné", has_photo, product_size, safer)
 
 
 SIZE = "8 fl oz spray bottle, about 7 in tall"
@@ -856,10 +876,56 @@ def test_people_formats_get_the_realism_rule(format):
 
 def test_realism_prompt_wording():
     assert creative.REALISM_PROMPT == (
-        "Real photographed human, not AI-perfect: visible pores and fine skin texture, natural unevenness, "
-        "freckles/moles/spots where natural, healthy glow with real shadows and undertones, no airbrushing, "
-        "natural camera grain."
+        "Unretouched editorial portrait, true-to-life skin texture with natural freckles and fine lines, "
+        "natural light, 85mm lens."
     )
+
+
+def test_planner_realism_rule_drops_veins_and_glowing_skin():
+    assert "vein" not in creative.REALISM_RULE and "glowing" not in creative.REALISM_RULE
+
+
+@pytest.mark.parametrize("format", ["ugc", "model_with_product", "before_after", "experience", "narrator"])
+def test_people_formats_state_wardrobe_and_framing(format):
+    assert finalize("Photo of the scene.", format, "service").endswith(
+        " The person is fully clothed in everyday wear suited to the brand (e.g. a linen shirt or knit top), "
+        "framed head-and-shoulders or waist-up."
+    )
+
+
+def test_product_only_formats_get_no_wardrobe_rule():
+    assert creative.WARDROBE_FRAMING not in finalize("Photo of the bottle on linen.", "studio_hero")
+
+
+@pytest.mark.parametrize("planner_prompt", [
+    "Portrait of a woman with faint visible veins on her temple, holding the bottle.",
+    "Portrait of a woman with glowing skin, holding the bottle.",
+    "Portrait of a woman, freckles, veins, holding the bottle.",
+])
+def test_people_prompts_drop_veins_and_glowing_skin(planner_prompt):
+    prompt = finalize(planner_prompt, "model_with_product")
+
+    assert "vein" not in prompt.lower() and "glowing skin" not in prompt.lower()
+    assert "holding the bottle" in prompt
+
+
+def test_safer_retry_wording_has_no_skin_detail_and_swaps_risky_scene_words():
+    planner = "Sensual photo of a woman in a tank top in her bathroom, bare shoulders, dewy skin, holding the bottle."
+
+    prompt = finalize(planner, "model_with_product", has_photo=True, safer=True)
+
+    lowered = prompt.lower()
+    for word in ("sensual", "tank top", "bathroom", "bare", "skin", "pores", "freckles"):
+        assert word not in lowered, word
+    assert creative.SAFER_REALISM_PROMPT in prompt and creative.WARDROBE_FRAMING in prompt
+    assert creative.REALISM_PROMPT not in prompt
+    assert "The product label reads exactly «J’aduné»" in prompt  # the product and label rules stay
+
+
+def test_safer_wording_leaves_product_only_prompts_alone():
+    planner = "Photo of the bottle on a bathroom shelf."
+
+    assert finalize(planner, "studio_hero", safer=True) == finalize(planner, "studio_hero")
 
 
 @pytest.mark.parametrize("prompt, people", [

@@ -7,6 +7,7 @@ from typing import Callable
 from fastapi import APIRouter, Depends, File, UploadFile
 from sqlmodel import Session
 
+from core.errors import CONTENT_FILTERED_MESSAGE
 from core.placeholders import needs_input
 from core.spend import check_spend_caps
 from db.database import get_session
@@ -27,9 +28,31 @@ def _failure(exc: Exception) -> tuple[str, str]:
         return "internal_error", "Something went wrong on our side."
     if isinstance(exc, higgsfield.HiggsfieldTimeout):
         return "image_timeout", str(exc)
+    if isinstance(exc, higgsfield.HiggsfieldContentFiltered):
+        return "content_filtered", CONTENT_FILTERED_MESSAGE
     if isinstance(exc, higgsfield.HiggsfieldError):
         return "image_provider_error", str(exc)
     return "storage_error", str(exc)
+
+
+def _generate_or_retry_safer(
+    generate: Callable[[str], higgsfield.GeneratedImage], prompt: str, safer_prompt: str
+) -> tuple[higgsfield.GeneratedImage, str]:
+    """The image and the prompt that made it. A content-filter rejection is retried once with safer wording.
+
+    Higgsfield doesn't charge rejected requests, so the retry stays within the one image per
+    creative that the spend check reserved.
+    """
+    try:
+        return generate(prompt), prompt
+    except higgsfield.HiggsfieldContentFiltered:
+        logger.info("Image rejected by the content filter (not charged); retrying once with safer wording")
+    return generate(safer_prompt), safer_prompt
+
+
+def _image_cost(prompt: str, has_photo: bool) -> Decimal:
+    """What Higgsfield charged for the image made from this prompt (the one actually sent)."""
+    return higgsfield.product_image_cost(prompt) if has_photo else higgsfield.estimate_cost()
 
 
 def _upload(image: higgsfield.GeneratedImage) -> tuple[str | None, Exception | None]:
@@ -94,22 +117,29 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
     if reference:
         reference = label_check.reference_label(reference, data.brand.brand_name)
     plan, planning_cost = creative.plan_creatives(data)
+    safer_prompts = []  # for the one retry after a content-filter rejection
     for item in plan.items:  # changed here, so the saved asset keeps the prompt actually sent
-        item.prompt = creative.finalize_image_prompt(
-            item.prompt, item.format, data.offer_type, data.brand.brand_name, has_photo, data.product_size
-        )
+        args = (item.format, data.offer_type, data.brand.brand_name, has_photo, data.product_size)
+        safer_prompts.append(creative.finalize_image_prompt(item.prompt, *args, safer=True))
+        item.prompt = creative.finalize_image_prompt(item.prompt, *args)
+    if has_photo:
+        # The reserve assumed RESERVE_PROMPT_CHARS per prompt; re-check if the real prompts cost more.
+        real = sum(higgsfield.product_image_cost(item.prompt) for item in plan.items)
+        if real > image_cost * count:
+            check_spend_caps(session, real + 2 * read_cost * count + planning_cost + reference_cost)
     test_group_id = uuid.uuid4().hex if data.creative_test else None
     test_mode = ("varied_format" if data.vary_format else "fixed_format") if data.creative_test else None
 
     # Generate in parallel (each job waits on Higgsfield), then upload one at a time:
     # parallel uploads were the suspect for intermittent ReadErrors from Supabase Storage.
     with ThreadPoolExecutor(max_workers=count) as pool:
-        futures = [pool.submit(generate, item.prompt) for item in plan.items]
+        futures = [pool.submit(_generate_or_retry_safer, generate, item.prompt, safer)
+                   for item, safer in zip(plan.items, safer_prompts)]
     outcomes = []
     unexpected = None
     for item, future in zip(plan.items, futures):
         try:
-            image = future.result()
+            image, item.prompt = future.result()
         except Exception as exc:  # generation failed: not charged, nothing to save
             outcomes.append((item, None, None, exc))
             if not isinstance(exc, higgsfield.HiggsfieldError):
@@ -151,7 +181,7 @@ def generate_creatives(data: CreativeRequest, session: Session = Depends(get_ses
             label_ok=check.ok if check else None,
             label_read=check.reads_logged if check else None,
             status="draft",
-            cost_usd=(image_cost + planning_share + (check.cost_usd if check else Decimal("0"))).quantize(
+            cost_usd=(_image_cost(item.prompt, has_photo) + planning_share + (check.cost_usd if check else Decimal("0"))).quantize(
                 COST_PRECISION, rounding=ROUND_HALF_UP
             ),
         )

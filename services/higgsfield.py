@@ -4,7 +4,7 @@ import random
 import time
 import uuid
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import Callable
 
 import httpx
@@ -34,6 +34,10 @@ class HiggsfieldError(Exception):
 
 class HiggsfieldTimeout(HiggsfieldError):
     """The job did not reach a terminal status within the generation timeout."""
+
+
+class HiggsfieldContentFiltered(HiggsfieldError):
+    """Higgsfield's moderation rejected the prompt or the image (status "nsfw"). Not charged."""
 
 
 class HiggsfieldAuthError(HiggsfieldError):
@@ -85,12 +89,25 @@ def estimate_cost() -> Decimal:
     return Decimal("0.006")
 
 
+# Marketing Studio's price depends only on prompt length, not format. Live POST
+# /estimate/marketing-studio/image checks on 2026-11-03 (PRODUCT_IMAGE_PARAMS, one reference):
+# 1000 chars $0.035, 1500 $0.037, 1897 $0.039, 2398 $0.042, 3795 $0.049, about
+# $0.0297 + $0.0000051 per character. These round up slightly, so the cost never undercounts.
+PRODUCT_BASE_USD = Decimal("0.0300")
+PRODUCT_USD_PER_CHAR = Decimal("0.0000052")
+# Reserved before planning, when the prompts aren't written yet. Prompts with every appended rule
+# run ~1900-2100 characters; a longer one is re-checked against the caps once it's known.
+RESERVE_PROMPT_CHARS = 3000
+
+
+def product_image_cost(prompt: str) -> Decimal:
+    """USD cost of one Marketing Studio image for this prompt, rounded up to 4 places."""
+    return (PRODUCT_BASE_USD + PRODUCT_USD_PER_CHAR * len(prompt)).quantize(Decimal("0.0001"), ROUND_CEILING)
+
+
 def estimate_product_image_cost() -> Decimal:
-    """USD cost of one image with PRODUCT_IMAGE_PARAMS and one reference image."""
-    # Live POST /estimate/marketing-studio/image checks on 2026-10-30: the price grows with prompt
-    # length: $0.030 (short), $0.035 (1050 characters). With the appended realism, scale and label
-    # rules, people-format prompts run ~1200-1450 characters: $0.036-$0.037 on 2026-11-03.
-    return Decimal("0.040")
+    """What to reserve per Marketing Studio image before the prompt is known."""
+    return product_image_cost("x" * RESERVE_PROMPT_CHARS)
 
 
 def _cancel_quietly(request_id: str) -> None:
@@ -158,6 +175,10 @@ def _generate(
         delay = min(delay * 1.5, POLL_MAX_SECONDS)
         status = _call("GET", f"/requests/{request_id}/status")
 
+    if status["status"] == "nsfw":
+        # Higgsfield's billing docs: a request that ends as nsfw is not charged; reserved credits are refunded.
+        logger.warning("Higgsfield job %s rejected by the content filter (nsfw); charged: no (refunded)", request_id)
+        raise HiggsfieldContentFiltered("Image generation ended as 'nsfw'.")
     if status["status"] != "completed":
         logger.warning("Higgsfield job %s ended as %s: %s", request_id, status["status"], status.get("error"))
         raise HiggsfieldError(f"Image generation ended as '{status['status']}'.")

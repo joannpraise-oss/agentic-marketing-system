@@ -203,6 +203,10 @@ class CreativePlan(BaseModel):
             raise ValueError("Each creative needs a distinct image prompt.")
         if spec.angles:
             # One creative per angle, in order; formats may repeat because the angles differ.
+            # With one angle there's nothing to match: the model often leaves the optional field
+            # empty, which failed every single-angle run. With several, a missing angle is an error.
+            if len(spec.angles) == 1 and not (items[0].angle or "").strip():
+                items[0].angle = spec.angles[0]
             got = [(item.angle or "").strip().casefold() for item in items]
             if got != [a.casefold() for a in spec.angles]:
                 raise ValueError(f"Return one creative per angle, in this order: {list(spec.angles)}.")
@@ -293,11 +297,30 @@ PEOPLE_WORDS = re.compile(
     re.IGNORECASE,
 )
 # The planner ignored REALISM_RULE in the live run, so this short form goes on the prompt itself.
+# Worded in photography terms: the skin-detail wording ("pores", "glow") got a model_with_product
+# image rejected as nsfw.
 REALISM_PROMPT = (
-    "Real photographed human, not AI-perfect: visible pores and fine skin texture, natural unevenness, "
-    "freckles/moles/spots where natural, healthy glow with real shadows and undertones, no airbrushing, "
-    "natural camera grain."
+    "Unretouched editorial portrait, true-to-life skin texture with natural freckles and fine lines, "
+    "natural light, 85mm lens."
 )
+WARDROBE_FRAMING = (
+    "The person is fully clothed in everyday wear suited to the brand (e.g. a linen shirt or knit top), "
+    "framed head-and-shoulders or waist-up."
+)
+# The retry after a content-filter rejection: no skin wording at all, and risky scene words swapped.
+SAFER_REALISM_PROMPT = "Unretouched editorial portrait photo, natural light, 85mm lens."
+DROPPED_PEOPLE_WORDS = re.compile(r",?\s*\b(?:(?:faint|visible|subtle|small)\s+)*veins?\b|,?\s*\bglowing skin\b",
+                                  re.IGNORECASE)
+SAFER_SWAPS = [
+    (re.compile(p, re.IGNORECASE), replacement) for p, replacement in [
+        (r"\b(?:sensual|sexy|seductive|intimate|sultry|steamy)\s*", ""),
+        (r"\b(?:bare|exposed|naked|nude)\s+(?:skin|shoulders?|arms?|legs?|back)\b", "a knit top"),
+        (r"\b(?:tank top|camisole|towel|robe|bathrobe|lingerie|bikini|swimsuit|bra)\b", "linen shirt"),
+        (r"\b(?:bathroom|shower|bathtub|bath)\b", "dressing room"),
+        (r"\bbedroom\b", "living room"),
+        (r"\bskin\b", "look"),
+    ]
+]
 # A live run showed the person holding one bottle and spraying from a second one.
 ONE_PRODUCT = "Exactly one product in the image."
 ONE_PRODUCT_HELD = "Exactly one product in the image; the person holds and uses the same single product."
@@ -329,13 +352,27 @@ def product_rules(people: bool, product_size: Optional[str]) -> str:
     return " ".join(rules + [HOLD_LOWER_HALF] if people else rules)
 
 
+def safer_scene(prompt: str) -> str:
+    """The planner's scene with the words most likely to trip a content filter swapped or removed."""
+    for pattern, replacement in SAFER_SWAPS:
+        prompt = pattern.sub(replacement, prompt)
+    return prompt
+
+
 def finalize_image_prompt(
-    prompt: str, format: str, offer_type: str, brand_name: str, has_photo: bool, product_size: Optional[str] = None
+    prompt: str, format: str, offer_type: str, brand_name: str, has_photo: bool,
+    product_size: Optional[str] = None, safer: bool = False,
 ) -> str:
-    """The prompt the image model gets: the planner's prompt plus the rules it must not drop."""
+    """The prompt the image model gets: the planner's prompt plus the rules it must not drop.
+
+    safer: the wording for the one retry after a content-filter rejection.
+    """
     people = shows_people(format, prompt)
     if people:
-        prompt = f"{prompt} {REALISM_PROMPT}"
+        prompt = DROPPED_PEOPLE_WORDS.sub("", prompt)
+        if safer:
+            prompt = safer_scene(prompt)
+        prompt = f"{prompt} {SAFER_REALISM_PROMPT if safer else REALISM_PROMPT} {WARDROBE_FRAMING}"
     if offer_type == "physical_product":
         prompt = f"{prompt} {product_rules(people, product_size)}"
     return with_product_label(prompt, brand_name, format) if has_photo else prompt
@@ -387,12 +424,13 @@ def _props_rule(request: CreativeRequest) -> str:
 REALISM_RULE = """- Realism, in every image prompt that shows people (ugc, model_with_product, lifestyle
   with people, before_after, experience, narrator): People must look like real, photographed
   humans, not AI-perfect. Describe natural skin: visible pores and fine texture, subtle
-  unevenness, and where it suits the person, freckles, moles, small spots, faint veins, or
-  piercings. Keep skin healthy and glowing, with real depth: natural shadows, highlights and
-  undertones, and varied skin color within the face. Avoid airbrushed or plastic skin, perfect
+  unevenness, and where it suits the person, freckles, moles, small spots, or piercings.
+  Give skin real depth: natural shadows, highlights and undertones, and varied skin color
+  within the face. Avoid airbrushed or plastic skin, perfect
   symmetry, and over-smoothed hair. Vary these details across people and ads; don't give
   everyone the same features. Lighting should look like a real camera: natural falloff, soft
-  shadows, slight grain where it fits UGC.
+  shadows, slight grain where it fits UGC. People are fully clothed in everyday wear suited
+  to the brand (e.g. a linen shirt or knit top), framed head-and-shoulders or waist-up.
 """
 
 
